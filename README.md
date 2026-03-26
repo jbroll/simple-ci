@@ -75,8 +75,9 @@ git clone git@github.com:jbroll/linda.sh.git  ~/src/linda.sh
 # Clone repos to test into ci-workspace
 git clone git@github.com:you/myrepo.git ~/ci-workspace/myrepo
 
-# Install peer dependencies for repos with file: links (once)
-# npm install --prefix ~/ci-workspace/some-dep
+# Install and build peer dependencies for repos with file: links (once).
+# These must be pre-built because their package.json exports point to dist/:
+# cd ~/ci-workspace/some-dep && npm install && npm run build
 
 # Start services (see Deployment section for persistent setup)
 ~/src/simple-ci/ci-worker.sh &

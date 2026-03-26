@@ -16,8 +16,9 @@ proc env-or {var default} {
     expr {[info exists ::env($var)] ? $::env($var) : $default}
 }
 
-set CI_WORKSPACE [file normalize [env-or CI_WORKSPACE [file join $::env(HOME) ci-workspace]]]
-set CI_LOGS      [file normalize [env-or CI_LOGS      [file join $::env(HOME) ci-logs]]]
+set CI_WORKSPACE    [file normalize [env-or CI_WORKSPACE    [file join $::env(HOME) ci-workspace]]]
+set CI_LOGS         [file normalize [env-or CI_LOGS         [file join $::env(HOME) ci-logs]]]
+set CI_ALLOWED_NETS [env-or CI_ALLOWED_NETS ""]
 
 file mkdir $CI_LOGS
 
@@ -28,6 +29,16 @@ proc random-id {} {
     close $fd
     binary scan $bytes H* hex
     return $hex
+}
+
+proc client-allowed {} {
+    global CI_ALLOWED_NETS
+    if {$CI_ALLOWED_NETS eq ""} { return 1 }
+    set ip [wapp-param REMOTE_ADDR]
+    foreach prefix $CI_ALLOWED_NETS {
+        if {[string match "${prefix}*" $ip]} { return 1 }
+    }
+    return 0
 }
 
 proc valid-repo {repo} {
@@ -74,6 +85,7 @@ proc wapp-before-dispatch-hook {} {
 }
 
 proc wapp-route-dispatch {page} {
+    if {![client-allowed]} { json-err "403 Forbidden" "access denied"; return }
     if {[wapp-param REQUEST_METHOD] eq "OPTIONS"} {
         wapp-reply-code "200 OK"
         wapp ""
@@ -186,6 +198,7 @@ wapp-route GET /health {
 }
 
 proc wapp-default {} {
+    if {![client-allowed]} { json-err "403 Forbidden" "access denied"; return }
     set path [wapp-param PATH_INFO]
     if {[wapp-param REQUEST_METHOD] eq "GET" && ($path eq "/" || $path eq "")} {
         json-ok {
@@ -247,5 +260,5 @@ proc wapp-default {} {
 }
 
 # ── Start ─────────────────────────────────────────────────────────────────────
-if {[llength $argv] == 0} { set argv [list -server 127.0.0.1:8080] }
+if {[llength $argv] == 0} { set argv [list -server 0.0.0.0:8080] }
 wapp-start $argv

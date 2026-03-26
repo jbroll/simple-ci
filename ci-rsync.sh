@@ -58,13 +58,13 @@ if [[ ! "$script" =~ ^[a-zA-Z0-9:_-]+$ ]]; then
     exit 1
 fi
 
-if [[ -n "$subdir" ]] && [[ "$subdir" == *..* ]]; then
-    echo "ci-rsync: subdir must not contain .." >&2
+if [[ -n "$subdir" ]] && [[ ! "$subdir" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
+    echo "ci-rsync: subdir must contain only alphanumeric, /, _, - characters" >&2
     exit 1
 fi
 
 # ── Set up worktree ───────────────────────────────────────────────────────────
-ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+ID=$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
 WORKTREE="$CI_WORKTREES/$repo-$ID"
 
 # rsync speaks its protocol over stdout — any stray byte breaks the handshake.
@@ -84,6 +84,7 @@ args[$last]="$WORKTREE/"
 
 exec 1>&3  # restore real stdout for rsync protocol
 exec 3>&-
+RSYNC_EXIT=0
 rsync "${args[@]}" || RSYNC_EXIT=$?
 exec 3>&1; exec 1>&2  # back to stderr-only for cleanup
 

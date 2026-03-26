@@ -62,8 +62,8 @@ while true; do
             git -C "$CI_WORKSPACE/$REPO" worktree add "$WORKTREE" "$COMMIT"
         fi
 
-        cd "$WORKTREE" && npm install
-        cd "$RUNDIR"   && npm run "$SCRIPT"
+        cd "$WORKTREE" && timeout "${CI_INSTALL_TIMEOUT:-600}"  npm install
+        cd "$RUNDIR"   && timeout "${CI_JOB_TIMEOUT:-3600}"   npm run "$SCRIPT"
 
     ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 

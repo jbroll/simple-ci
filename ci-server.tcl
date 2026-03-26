@@ -25,7 +25,7 @@ file mkdir $CI_LOGS
 # ── Helpers ───────────────────────────────────────────────────────────────────
 proc random-id {} {
     set fd [open /dev/urandom rb]
-    set bytes [read $fd 4]
+    set bytes [read $fd 8]
     close $fd
     binary scan $bytes H* hex
     return $hex
@@ -140,8 +140,8 @@ wapp-route POST /job {
     # optional subdir — relative path within repo, e.g. "apps/jscad-web"
     set subdir ""
     if {[regexp {"subdir"\s*:\s*"([^"]+)"} $body -> sd]} {
-        if {[string match "*..*" $sd] || [string match "/*" $sd]} {
-            json-err "400 Bad Request" "subdir must be a relative path with no .."
+        if {![regexp {^[a-zA-Z0-9/_-]+$} $sd]} {
+            json-err "400 Bad Request" "subdir must contain only alphanumeric, /, _, - characters"
             return
         }
         set subdir $sd

@@ -74,5 +74,5 @@ curl http://localhost:8080/jobs
 ## Target Repos and Scripts
 
 - `wicketmap` → `test:run` (vitest unit tests, no browser)
-- `jscadui` → `test:unit` (turbo, run from repo root) or `test` with `subdir: apps/jscad-web`
-- `jbr-jazz` has no git remote — must be manually rsynced to gpu when updated
+- `jscadui` → `packages/openscad/test:local` via `subdir: packages/openscad` (full OpenSCAD comparison suite; invoked automatically by `npm test` in that package via ci-push + ci-wait)
+- `jbr-jazz` → `git@github.com:jbroll/jbr-jazz.git` — cloned at `~/ci-workspace/jbr-jazz`; update with `git -C ~/ci-workspace/jbr-jazz pull` on gpu when needed

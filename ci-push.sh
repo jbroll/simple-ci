@@ -31,7 +31,16 @@ if [[ $# -ne 1 ]]; then
     exit 1
 fi
 
+_tmpfile=$(mktemp)
+trap 'rm -f "$_tmpfile"' EXIT
+
+# Capture rsync stderr (server messages arrive there); rsync protocol uses stdout
 # shellcheck disable=SC2086
 rsync --rsync-path="$CI_REMOTE_SCRIPT" \
     -a ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
-    . "$CI_HOST:$1"
+    . "$CI_HOST:$1" 2>"$_tmpfile" || { cat "$_tmpfile" >&2; exit 1; }
+
+cat "$_tmpfile" >&2
+
+# Extract job ID from "ci-job: <id> queued" line and print to stdout
+sed -n 's/ci-job: \([0-9a-f]*\) queued.*/\1/p' "$_tmpfile"

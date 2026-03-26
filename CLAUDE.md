@@ -71,6 +71,14 @@ curl http://localhost:8080/jobs
 - **`set -euo pipefail` + exit codes**: Under `set -e`, any command exiting non-zero must use `|| VAR=$?` to capture the exit code — a bare command followed by `$?` on the next line won't work. Applied in both `ci-worker.sh` (job subshell) and `ci-rsync.sh` (rsync invocation).
 - **Optional `subdir` field**: `parse_field` uses grep; for optional/missing fields use `(grep ... || true)` to avoid exit code 1 propagating under `set -e`.
 
+## Updating scripts on gpu
+
+`~/src/simple-ci` on gpu is a git clone. After pushing changes:
+
+```bash
+ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server ci-worker'
+```
+
 ## Target Repos and Scripts
 
 - `wicketmap` → `test:run` (vitest unit tests, no browser)

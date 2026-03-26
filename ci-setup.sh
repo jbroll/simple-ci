@@ -37,16 +37,18 @@ Next steps on this host:
      git clone <url> $CI_WORKSPACE/nmea-widgets
      git clone <url> $CI_WORKSPACE/jazz-mock
 
-2. Install deps for wicketmap's sibling repos (needed for file: links):
-     npm install --prefix $CI_WORKSPACE/jbr-jazz
-     npm install --prefix $CI_WORKSPACE/nmea-widgets
-     npm install --prefix $CI_WORKSPACE/jazz-mock
+2. Install and build sibling repos that wicketmap depends on via file: links.
+   These must be pre-built because their package.json exports point to dist/:
+     cd $CI_WORKSPACE/jbr-jazz     && npm install && npm run build
+     cd $CI_WORKSPACE/nmea-widgets && npm install && npm run build
+     cd $CI_WORKSPACE/jazz-mock    && npm install && npm run build
+   Re-run after pulling updates to any of these repos.
 
 3. Start the worker (keep running, e.g. via a runit/systemd service):
      nohup $HOME/src/simple-ci/ci-worker.sh >> $CI_LOGS/worker.log 2>&1 &
 
 4. Start the HTTP server:
-     $HOME/src/simple-ci/ci-server.tcl -local 8080
+     $HOME/src/simple-ci/ci-server.tcl -server 127.0.0.1:8080
 
 5. Add log rotation to cron (keeps newest 500 entries):
      0 3 * * *  ls -t $CI_LOGS/*.log $CI_LOGS/*.status 2>/dev/null | tail -n +501 | xargs rm -f

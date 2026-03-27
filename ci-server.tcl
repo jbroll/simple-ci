@@ -170,6 +170,23 @@ wapp-route GET /job/id {
     json-ok [read-file $sf]
 }
 
+# DELETE /job/:id — remove a job's status and log files
+wapp-route DELETE /job/id {
+    set sf [status-file $id]
+    if {![file exists $sf]} {
+        json-err "404 Not Found" "job not found: $id"
+        return
+    }
+    set data [read-file $sf]
+    if {[regexp {"status":"running"} $data]} {
+        json-err "409 Conflict" "cannot delete a running job"
+        return
+    }
+    file delete -force $sf
+    file delete -force [log-file $id]
+    json-ok "{\"deleted\":\"$id\"}"
+}
+
 # GET /log/:id
 wapp-route GET /log/id {
     set lf [log-file $id]
@@ -181,9 +198,30 @@ wapp-route GET /log/id {
     wapp [read-file $lf]
 }
 
+# ── Auto-expiry ──────────────────────────────────────────────────────────────
+# Remove status+log files for finished jobs older than CI_JOB_TTL seconds.
+set CI_JOB_TTL [env-or CI_JOB_TTL 7200]   ;# default 2 hours
+
+proc expire-old-jobs {} {
+    global CI_LOGS CI_JOB_TTL
+    if {$CI_JOB_TTL <= 0} return
+    set cutoff [expr {[clock seconds] - $CI_JOB_TTL}]
+    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
+        if {[file mtime $f] >= $cutoff} continue
+        catch {
+            set data [read-file $f]
+            if {[regexp {"status":"running"} $data]} return  ;# don't expire running
+            set id [file rootname [file tail $f]]
+            file delete -force $f
+            file delete -force [log-file $id]
+        }
+    }
+}
+
 # GET /jobs  — all jobs, newest-file-first
 wapp-route GET /jobs {
     global CI_LOGS
+    expire-old-jobs
     set files [lsort -decreasing [glob -nocomplain -directory $CI_LOGS *.status]]
     set items {}
     foreach f $files {

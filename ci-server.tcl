@@ -200,6 +200,7 @@ wapp-route GET /log/id {
 
 # ── Auto-expiry ──────────────────────────────────────────────────────────────
 # Remove status+log files for finished jobs older than CI_JOB_TTL seconds.
+# "running" jobs whose mtime is older than TTL are marked abandoned (worker died).
 set CI_JOB_TTL [env-or CI_JOB_TTL 7200]   ;# default 2 hours
 
 proc expire-old-jobs {} {
@@ -210,7 +211,15 @@ proc expire-old-jobs {} {
         if {[file mtime $f] >= $cutoff} continue
         catch {
             set data [read-file $f]
-            if {[regexp {"status":"running"} $data]} return  ;# don't expire running
+            if {[regexp {"status":"running"} $data]} {
+                # Stale "running" job — worker died; mark abandoned
+                set id [file rootname [file tail $f]]
+                set now [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%SZ -gmt 1]
+                regsub {"status":"running"} $data {"status":"abandoned"} data
+                append data ""  ;# no-op, keeps $data in scope
+                atomic-write $f $data
+                continue
+            }
             set id [file rootname [file tail $f]]
             file delete -force $f
             file delete -force [log-file $id]

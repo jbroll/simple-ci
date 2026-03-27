@@ -12,7 +12,7 @@ export LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
 
 mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES" "$CI_LOGS" "$LINDA_DIR"
 
-log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+log() { printf '[%s] %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$*" >&2; }
 
 parse_field() { printf '%s' "$1" | (grep -o "\"$2\":\"[^\"]*\"" || true) | cut -d'"' -f4; }
 
@@ -40,7 +40,7 @@ while true; do
     WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
     RUNDIR="${SUBDIR:+$WORKTREE/$SUBDIR}"
     RUNDIR="${RUNDIR:-$WORKTREE}"
-    STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    STARTED="$(date +%Y-%m-%dT%H:%M:%S)"
     EXIT_CODE=0
 
     write_status "$ID" \
@@ -67,7 +67,7 @@ while true; do
 
     ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
-    FINISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    FINISHED="$(date +%Y-%m-%dT%H:%M:%S)"
     { echo ""; echo "=== exit $EXIT_CODE | $FINISHED ==="; } >> "$LOGFILE"
 
     STATUS=$([ "$EXIT_CODE" -eq 0 ] && echo "pass" || echo "fail")

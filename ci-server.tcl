@@ -203,20 +203,35 @@ wapp-route GET /log/id {
 # "running" jobs whose mtime is older than TTL are marked abandoned (worker died).
 set CI_JOB_TTL [env-or CI_JOB_TTL 7200]   ;# default 2 hours
 
+proc job-timestamp {data} {
+    # Use finished if available, else started, else ""
+    if {[regexp {"finished":"([^"]+)"} $data -> ts]} { return $ts }
+    if {[regexp {"started":"([^"]+)"} $data -> ts]} { return $ts }
+    return ""
+}
+
+proc parse-iso-time {ts} {
+    # Parse YYYY-MM-DDTHH:MM:SS (local time, no Z)
+    clock scan $ts -format %Y-%m-%dT%H:%M:%S
+}
+
 proc expire-old-jobs {} {
     global CI_LOGS CI_JOB_TTL
     if {$CI_JOB_TTL <= 0} return
     set cutoff [expr {[clock seconds] - $CI_JOB_TTL}]
     foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
-        if {[file mtime $f] >= $cutoff} continue
         catch {
             set data [read-file $f]
+            set ts [job-timestamp $data]
+            if {$ts eq ""} {
+                # No timestamp (queued) — fall back to file mtime
+                if {[file mtime $f] >= $cutoff} continue
+            } else {
+                if {[parse-iso-time $ts] >= $cutoff} continue
+            }
             if {[regexp {"status":"running"} $data]} {
-                # Stale "running" job — worker died; mark abandoned
-                set id [file rootname [file tail $f]]
-                set now [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%SZ -gmt 1]
+                # Stale "running" job — worker died; mark stale
                 regsub {"status":"running"} $data {"status":"stale"} data
-                append data ""  ;# no-op, keeps $data in scope
                 atomic-write $f $data
                 continue
             }

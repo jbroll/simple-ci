@@ -211,7 +211,8 @@ proc job-timestamp {data} {
 }
 
 proc parse-iso-time {ts} {
-    # Parse YYYY-MM-DDTHH:MM:SS (local time, no Z)
+    # Strip trailing Z from old UTC timestamps
+    set ts [string trimright $ts Z]
     clock scan $ts -format %Y-%m-%dT%H:%M:%S
 }
 

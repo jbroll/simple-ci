@@ -57,6 +57,11 @@ proc log-file {id} {
     return [file join $CI_LOGS "${id}.log"]
 }
 
+proc lock-file {id} {
+    global CI_LOGS
+    return [file join $CI_LOGS "${id}.lock"]
+}
+
 proc read-file {path} {
     set fd [open $path r]
     set data [read $fd]
@@ -184,6 +189,7 @@ wapp-route DELETE /job/id {
     }
     file delete -force $sf
     file delete -force [log-file $id]
+    file delete -force [lock-file $id]
     json-ok "{\"deleted\":\"$id\"}"
 }
 
@@ -200,7 +206,7 @@ wapp-route GET /log/id {
 
 # ── Auto-expiry ──────────────────────────────────────────────────────────────
 # Remove status+log files for finished jobs older than CI_JOB_TTL seconds.
-# "running" jobs whose mtime is older than TTL are marked abandoned (worker died).
+# "running" jobs whose worker has exited are detected via flock and marked stale.
 set CI_JOB_TTL [env-or CI_JOB_TTL 7200]   ;# default 2 hours
 
 proc job-timestamp {data} {
@@ -216,6 +222,13 @@ proc parse-iso-time {ts} {
     clock scan $ts -format %Y-%m-%dT%H:%M:%S
 }
 
+proc job-lock-held {id} {
+    set lf [lock-file $id]
+    if {![file exists $lf]} { return 0 }
+    # flock -n exits 0 if lock is free (worker gone), 1 if held (worker alive)
+    return [catch {exec flock -n $lf true}]
+}
+
 proc expire-old-jobs {} {
     global CI_LOGS CI_JOB_TTL
     if {$CI_JOB_TTL <= 0} return
@@ -223,22 +236,26 @@ proc expire-old-jobs {} {
     foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
         catch {
             set data [read-file $f]
+            set id [file rootname [file tail $f]]
+            if {[regexp {"status":"running"} $data]} {
+                # Zombie check: if worker's flock is gone, mark stale immediately
+                if {![job-lock-held $id]} {
+                    regsub {"status":"running"} $data {"status":"stale"} data
+                    atomic-write $f $data
+                    file delete -force [lock-file $id]
+                }
+                continue
+            }
+            # Finished/queued/stale: delete if older than TTL
             set ts [job-timestamp $data]
             if {$ts eq ""} {
-                # No timestamp (queued) — fall back to file mtime
                 if {[file mtime $f] >= $cutoff} continue
             } else {
                 if {[parse-iso-time $ts] >= $cutoff} continue
             }
-            if {[regexp {"status":"running"} $data]} {
-                # Stale "running" job — worker died; mark stale
-                regsub {"status":"running"} $data {"status":"stale"} data
-                atomic-write $f $data
-                continue
-            }
-            set id [file rootname [file tail $f]]
             file delete -force $f
             file delete -force [log-file $id]
+            file delete -force [lock-file $id]
         }
     }
 }

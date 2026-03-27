@@ -43,6 +43,11 @@ while true; do
     STARTED="$(date +%Y-%m-%dT%H:%M:%S)"
     EXIT_CODE=0
 
+    # Hold flock for job lifetime — server detects zombies via non-blocking test
+    LOCKFILE="$CI_LOGS/$ID.lock"
+    exec 9>"$LOCKFILE"
+    flock 9
+
     write_status "$ID" \
         "{\"id\":\"$ID\",\"status\":\"running\",\"repo\":\"$REPO\",\"commit\":\"$COMMIT\",\"script\":\"$SCRIPT\"${SUBDIR:+,\"subdir\":\"$SUBDIR\"},\"started\":\"$STARTED\"}"
 
@@ -75,6 +80,9 @@ while true; do
         "{\"id\":\"$ID\",\"status\":\"$STATUS\",\"exit\":$EXIT_CODE,\"repo\":\"$REPO\",\"commit\":\"$COMMIT\",\"script\":\"$SCRIPT\"${SUBDIR:+,\"subdir\":\"$SUBDIR\"},\"started\":\"$STARTED\",\"finished\":\"$FINISHED\"}"
 
     git -C "$CI_WORKSPACE/$REPO" worktree remove --force "$WORKTREE" 2>/dev/null || true
+
+    exec 9>&-
+    rm -f "$LOCKFILE"
 
     log "job $ID: $STATUS (exit $EXIT_CODE)"
 done

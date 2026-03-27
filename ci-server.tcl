@@ -215,7 +215,7 @@ proc expire-old-jobs {} {
                 # Stale "running" job — worker died; mark abandoned
                 set id [file rootname [file tail $f]]
                 set now [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%SZ -gmt 1]
-                regsub {"status":"running"} $data {"status":"abandoned"} data
+                regsub {"status":"running"} $data {"status":"stale"} data
                 append data ""  ;# no-op, keeps $data in scope
                 atomic-write $f $data
                 continue

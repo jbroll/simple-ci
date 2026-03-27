@@ -222,7 +222,10 @@ proc expire-old-jobs {} {
 wapp-route GET /jobs {
     global CI_LOGS
     expire-old-jobs
-    set files [lsort -decreasing [glob -nocomplain -directory $CI_LOGS *.status]]
+    set files [glob -nocomplain -directory $CI_LOGS *.status]
+    set files [lsort -decreasing -command {apply {{a b} {
+        expr {[file mtime $a] - [file mtime $b]}
+    }}} $files]
     set items {}
     foreach f $files {
         catch { lappend items [read-file $f] }

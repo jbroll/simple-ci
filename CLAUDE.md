@@ -21,21 +21,21 @@ The old individual scripts (`ci-push.sh`, `ci-wait.sh`, `ci-stat.sh`, `ci-kill.s
 ## Gotchas
 
 - **`-server` not `-local`**: Wapp's `-local` tries to open a browser. Always use `-server <addr>:<port>`.
-- **Linda seq mode**: Linda writes seq files as `%08d` (zero-padded decimal). Tcl's `incr` treats `00000008` as invalid octal — don't use `seq` mode in the server.
 - **`set -e` + exit codes**: `cmd || VAR=$?` to capture exit code under `set -e`; a bare command followed by `$?` on the next line will never see a non-zero value.
-- **`subdir` field**: parsed with grep in `parse_field`; use `(grep ... || true)` for optional fields to avoid exit 1 propagating.
-- **Worker concurrency**: `$(jobs -rp)` always returns empty in non-interactive scripts (subshell has no job table). Worker uses an explicit `pids` array + `kill -0` to track live slots.
 - **`IFS` and empty fields**: `IFS=$'\t'` collapses consecutive tabs (tab is IFS whitespace). Use a non-whitespace delimiter (e.g. `|`) with `join("|")` in jq when fields may be empty.
+- **setsid + process group kill**: `ci-run.sh` is spawned with `setsid` so PID == PGID. The kill endpoint reads the PID from the lock file and sends `kill -TERM -- -$pid` to kill the entire group (including npm child processes).
+- **Zombie detection timing**: The `maintenance` proc runs every 10s independently of dispatch. This gives `ci-run.sh` enough time to acquire its flock before the stale-job check runs.
+- **Atomic status writes**: Always use `atomic-write` (tmp + mv) in Tcl and the `jq > tmp && mv` pattern in bash to avoid partial reads.
 
 ## Deployment on gpu
 
-Services are runit-supervised at `/etc/sv/ci-server` and `/etc/sv/ci-worker`. After pushing changes:
+Only `ci-server` is runit-supervised (ci-worker is gone — the server dispatches jobs directly). After pushing changes:
 
 ```bash
-ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server ci-worker'
+ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
 ```
 
-Logs via svlogd: `/var/log/ci-server/` and `/var/log/ci-worker/`.
+Logs via svlogd: `/var/log/ci-server/`.
 
 ## Target Repos on gpu
 

@@ -1,6 +1,6 @@
 # simple-ci
 
-A minimal distributed CI system. Jobs are submitted from a developer machine and executed in isolation on a build host. The system is intentionally small: ~200 lines of Tcl for the HTTP server, ~90 lines of bash for the worker, ~160 lines of bash for the client CLI.
+A minimal distributed CI system. Jobs are submitted from a developer machine and executed in isolation on a build host. The system is intentionally small: ~200 lines of Tcl for the HTTP server, ~60 lines of bash for the per-job runner, ~160 lines of bash for the client CLI.
 
 ## Architecture
 
@@ -9,14 +9,19 @@ Developer machine                       Build host (gpu)
 ─────────────────                       ────────────────────────────────
 sci push ────rsync──────────────────▶ ci-rsync.sh
                                             │ creates git worktree
-                                            │ queues job via linda
+                                            │ writes queued status file
                                             ▼
-                                       linda tuple space
+                                       ~/ci-logs/<id>.status  (queued)
                                             │
+                                            ▼ (dispatch-jobs loop, 500ms)
+                                       ci-server.tcl
+                                            │ claims job (queued→running)
+                                            │ spawns setsid ci-run.sh <id>
                                             ▼
-                                       ci-worker.sh (daemon, CI_WORKERS slots)
+                                       ci-run.sh  (per-job, up to CI_WORKERS)
+                                            │ acquires flock, writes PID
                                             │ npm install + npm run <script>
-                                            │ writes log + status
+                                            │ writes log + final status
                                             ▼
                                        ~/ci-logs/<id>.{log,status,lock}
 
@@ -26,21 +31,21 @@ sci kill      GET /jobs
               POST /job/:id/kill
 ```
 
-Jobs move through states: `queued` → `running` → `pass` | `fail` | `killed`. Stale running jobs (worker crashed) are detected via flock and marked `stale`.
+Jobs move through states: `queued` → `running` → `pass` | `fail` | `killed`. Stale running jobs (ci-run.sh crashed without updating status) are detected via flock and marked `stale`.
 
 ### Two submission paths
 
 **rsync path** (`sci push` + `ci-rsync.sh`): The developer's working tree is rsynced directly into a fresh git worktree on the build host. Useful for testing uncommitted changes or gitignored files (e.g. generated test data). This is the primary path.
 
-**HTTP path** (`POST /job`): Submit a repo name, commit hash, and npm script. The worker fetches the commit from the upstream remote and creates a worktree from it. Useful for post-merge validation or triggering from other scripts.
+**HTTP path** (`POST /job`): Submit a repo name, commit hash, and npm script. The server fetches the commit from the upstream remote and creates a worktree from it. Useful for post-merge validation or triggering from other scripts.
 
-### Linda tuple space
+### Job dispatch
 
-Jobs are queued via [linda.sh](https://github.com/jbroll/linda.sh), a file-based tuple space. `ci-rsync.sh` and `ci-server.tcl` write tuples with `linda out ci-jobs`; `ci-worker.sh` blocks on `linda inp ci-jobs`. This decouples submission from execution with no broker process required.
+`ci-server.tcl` runs a `dispatch-jobs` loop every 500ms. When a queued status file is found and `CI_WORKERS` slots are available, the server atomically claims the job (rewrites status `queued→running` + adds `started` timestamp) then spawns `setsid ci-run.sh <id> &`. The single-threaded Tcl event loop makes the claim step race-free.
 
 ### Concurrency
 
-The worker runs up to `CI_WORKERS` jobs in parallel (default 3). Each job is backgrounded as a subshell; the main loop tracks live PIDs and waits for a free slot before pulling the next job from Linda.
+Up to `CI_WORKERS` (default 3) `ci-run.sh` processes run concurrently. Each is its own process group leader (via `setsid`), which allows clean process-group kill when a job is cancelled.
 
 ### Job isolation
 
@@ -48,20 +53,18 @@ Each job runs in a dedicated git worktree under `~/ci-worktrees/<repo>-<id>/`. T
 
 ## Dependencies
 
-Both must be sibling directories of `simple-ci`:
-
-- [`linda.sh`](https://github.com/jbroll/linda.sh) — tuple-space coordination (`../linda.sh/linda.sh`)
-- [`wapp`](https://sqlite.org/wapp.html) — Tcl web framework (`../linda.sh/wapp.tcl`, `../linda.sh/wapp-routes.tcl`)
+- [`wapp`](https://sqlite.org/wapp.html) — Tcl web framework, vendored as `wapp.tcl` and `wapp-routes.tcl` in this repo (no sibling directory required)
 
 ## Files
 
 | File | Role |
 |---|---|
-| `ci-server.tcl` | Wapp HTTP server; accepts job submissions, serves status and logs |
-| `ci-worker.sh` | Daemon; pulls from Linda queue, runs up to `CI_WORKERS` jobs concurrently |
-| `ci-rsync.sh` | Rsync server-side wrapper; creates worktree, queues job, prints job ID |
+| `ci-server.tcl` | Wapp HTTP server; dispatches jobs, serves status and logs |
+| `ci-run.sh` | Per-job runner spawned by the server; acquires flock, runs npm, writes final status |
+| `ci-rsync.sh` | Rsync server-side wrapper; creates worktree, writes queued status file, prints job ID |
 | `sci` | Client CLI: `push`, `wait`, `stat`, `kill`, `clean` subcommands |
 | `ci-setup.sh` | One-time build-host initialisation |
+| `wapp.tcl`, `wapp-routes.tcl` | Vendored Tcl web framework |
 | `simple-ci.conf` | Default configuration (override per-project or via `~/.config/simple-ci.conf`) |
 
 ## Setup
@@ -69,9 +72,8 @@ Both must be sibling directories of `simple-ci`:
 ### Build host
 
 ```bash
-# Clone this repo and its dependencies as siblings
+# Clone this repo
 git clone git@github.com:jbroll/simple-ci.git ~/src/simple-ci
-git clone git@github.com:jbroll/linda.sh.git  ~/src/linda.sh
 
 # Initialise directories and symlinks
 ~/src/simple-ci/ci-setup.sh
@@ -229,6 +231,8 @@ The server exposes a self-describing API schema at `GET /` in MCP tool format.
 
 ## Deployment (Void Linux / runit)
 
+Only `ci-server` needs a runit service. The server spawns `ci-run.sh` directly — there is no separate worker daemon.
+
 ```sh
 # /etc/sv/ci-server/run
 #!/bin/sh
@@ -236,27 +240,15 @@ export HOME=/home/john
 export PATH=/home/john/bin:/usr/local/bin:/usr/bin:/bin
 export CI_ALLOWED_NETS="127.0.0.1 192.168.1."
 export CI_WORKSPACE=/home/john/ci-workspace
+export CI_WORKTREES=/home/john/ci-worktrees
 export CI_LOGS=/home/john/ci-logs
-export LINDA_DIR=/home/john/ci-linda
+export CI_WORKERS=3
 exec chpst -u john /home/john/src/simple-ci/ci-server.tcl -server 0.0.0.0:8080 2>&1
 ```
 
-```sh
-# /etc/sv/ci-worker/run
-#!/bin/sh
-export HOME=/home/john
-export PATH=/home/john/bin:/usr/local/bin:/usr/bin:/bin
-export CI_WORKSPACE=/home/john/ci-workspace
-export CI_WORKTREES=/home/john/ci-worktrees
-export CI_LOGS=/home/john/ci-logs
-export LINDA_DIR=/home/john/ci-linda
-export CI_WORKERS=3
-exec chpst -u john /home/john/src/simple-ci/ci-worker.sh 2>&1
-```
+Enable with `ln -s /etc/sv/ci-server /var/service/`. Logs via svlogd at `/var/log/ci-server/`.
 
-Enable with `ln -s /etc/sv/ci-server /var/service/` and `ln -s /etc/sv/ci-worker /var/service/`. Logs via svlogd at `/var/log/ci-server/` and `/var/log/ci-worker/`.
-
-After pulling updates: `git -C ~/src/simple-ci pull && sudo sv restart ci-server ci-worker`
+After pulling updates: `git -C ~/src/simple-ci pull && sudo sv restart ci-server`
 
 `HOME` must be set explicitly — runit does not inherit it, and several tools (`npm`, `git`) require it.
 
@@ -267,7 +259,6 @@ After pulling updates: `git -C ~/src/simple-ci pull && sudo sv restart ci-server
 | `CI_WORKSPACE` | `~/ci-workspace/` | Cloned repos used as worktree bases |
 | `CI_WORKTREES` | `~/ci-worktrees/` | Per-job worktrees (deleted after run) + permanent symlinks for `file:` deps |
 | `CI_LOGS` | `~/ci-logs/` | `<id>.status`, `<id>.log`, and `<id>.lock` (held while running) per job |
-| `LINDA_DIR` | `~/ci-linda/` | Linda tuple-space files |
 
 ### Sibling `file:` dependencies
 

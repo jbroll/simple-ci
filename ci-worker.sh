@@ -88,14 +88,25 @@ run_job() {
     log "job $ID: $STATUS (exit $EXIT_CODE)"
 }
 
+reap_pids() {
+    local alive=()
+    for p in "${pids[@]+"${pids[@]}"}"; do
+        kill -0 "$p" 2>/dev/null && alive+=("$p") || true
+    done
+    pids=("${alive[@]+"${alive[@]}"}")
+}
+
 log "worker started, LINDA_DIR=$LINDA_DIR, CI_WORKERS=$CI_WORKERS"
 
+declare -a pids=()
 while true; do
-    # Wait for a free slot before blocking on Linda
-    while [[ $(jobs -rp | wc -l) -ge "$CI_WORKERS" ]]; do
+    reap_pids
+    while (( ${#pids[@]} >= CI_WORKERS )); do
         wait -n 2>/dev/null || true
+        reap_pids
     done
 
     JOB=$("$LINDA" inp ci-jobs)
     run_job "$JOB" &
+    pids+=($!)
 done

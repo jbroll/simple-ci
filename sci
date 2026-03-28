@@ -139,7 +139,7 @@ cmd_push() {
 
     local tmp
     tmp=$(mktemp)
-    trap 'rm -f "$tmp"' EXIT
+    trap 'rm -f "${tmp:-}"' EXIT
 
     # shellcheck disable=SC2086
     rsync --rsync-path="$CI_REMOTE_SCRIPT" \

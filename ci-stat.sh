@@ -69,10 +69,10 @@ jq_filter='
     , .repo
     , .commit[0:8]
     , (if .subdir then .subdir + "/" else "" end) + .script
-    ] | @tsv'
+    ] | join("|")'
 
 printf '%s' "$JSON" \
   | jq -r --arg filter "$STATUS_FILTER" --argjson count "$COUNT" "$jq_filter" \
-  | while IFS=$'\t' read -r id status ts repo commit label; do
+  | while IFS='|' read -r id status ts repo commit label; do
     printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "$id" "$status" "$ts" "$repo" "$commit" "$label"
 done

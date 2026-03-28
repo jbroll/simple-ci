@@ -8,6 +8,7 @@ LINDA="${SCRIPT_DIR}/../linda.sh/linda.sh"
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
 CI_WORKTREES="${CI_WORKTREES:-$HOME/ci-worktrees}"
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
+CI_WORKERS="${CI_WORKERS:-3}"
 export LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
 
 mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES" "$CI_LOGS" "$LINDA_DIR"
@@ -23,10 +24,10 @@ write_status() {
     mv "$tmp" "$CI_LOGS/$id.status"
 }
 
-log "worker started, LINDA_DIR=$LINDA_DIR"
+run_job() {
+    local JOB="$1"
+    local ID REPO COMMIT SCRIPT SUBDIR PREBUILT LOGFILE WORKTREE RUNDIR STARTED FINISHED LOCKFILE EXIT_CODE STATUS
 
-while true; do
-    JOB=$("$LINDA" inp ci-jobs)
     ID=$(parse_field     "$JOB" id)
     REPO=$(parse_field   "$JOB" repo)
     COMMIT=$(parse_field "$JOB" commit)
@@ -85,4 +86,16 @@ while true; do
     rm -f "$LOCKFILE"
 
     log "job $ID: $STATUS (exit $EXIT_CODE)"
+}
+
+log "worker started, LINDA_DIR=$LINDA_DIR, CI_WORKERS=$CI_WORKERS"
+
+while true; do
+    # Wait for a free slot before blocking on Linda
+    while [[ $(jobs -rp | wc -l) -ge "$CI_WORKERS" ]]; do
+        wait -n 2>/dev/null || true
+    done
+
+    JOB=$("$LINDA" inp ci-jobs)
+    run_job "$JOB" &
 done

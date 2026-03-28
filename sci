@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
+CURL=(curl -sf --connect-timeout 5 --max-time 30)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 load_conf() {
     local loaded=0
@@ -104,7 +106,7 @@ cmd_stat() {
     fi
 
     local json
-    json=$(curl -sf "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
+    json=$("${CURL[@]}" "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
 
     printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "ID" "STATUS" "TIME" "REPO" "COMMIT" "SCRIPT"
     printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "--------" "-------" "--------" "--------------------" "--------" "------"
@@ -161,7 +163,7 @@ cmd_wait() {
 
     while true; do
         local resp state
-        resp=$(curl -sf "$CI_SERVER_URL/job/$id" 2>/dev/null) || {
+        resp=$("${CURL[@]}" "$CI_SERVER_URL/job/$id" 2>/dev/null) || {
             printf '\nsci: server unreachable, retrying...\n' >&2
             sleep "$interval"
             continue
@@ -174,12 +176,12 @@ cmd_wait() {
                 ;;
             pass)
                 printf ' %s\n' "$state" >&2
-                curl -sf "$CI_SERVER_URL/log/$id"
+                "${CURL[@]}" "$CI_SERVER_URL/log/$id"
                 exit 0
                 ;;
             fail|killed)
                 printf ' %s\n' "$state" >&2
-                curl -sf "$CI_SERVER_URL/log/$id"
+                "${CURL[@]}" "$CI_SERVER_URL/log/$id"
                 exit 1
                 ;;
             *)
@@ -197,7 +199,7 @@ cmd_kill() {
 
     if [[ $# -ne 1 ]]; then cmd_help kill >&2; exit 1; fi
 
-    curl -sf -X POST "$CI_SERVER_URL/job/$1/kill" \
+    "${CURL[@]}" -X POST "$CI_SERVER_URL/job/$1/kill" \
         | jq -r '"killed: \(.killed)"'
 }
 
@@ -220,7 +222,7 @@ cmd_clean() {
     done
 
     local json
-    json=$(curl -sf "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
+    json=$("${CURL[@]}" "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
 
     # Build jq filter: exclude running, apply status filter or default (fail+queued), apply -k
     local matched
@@ -252,7 +254,7 @@ cmd_clean() {
     fi
 
     while IFS='|' read -r id status repo; do
-        if curl -sf -X DELETE "$CI_SERVER_URL/job/$id" > /dev/null; then
+        if "${CURL[@]}" -X DELETE "$CI_SERVER_URL/job/$id" > /dev/null; then
             printf 'deleted %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo"
         else
             printf 'FAILED  %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo" >&2

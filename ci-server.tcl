@@ -3,13 +3,9 @@
 package require Tcl 8.6-
 
 set script_dir [file dirname [file normalize [info script]]]
-set linda_dir  [file normalize [file join $script_dir ../linda.sh]]
 
-source [file join $linda_dir wapp.tcl]
-source [file join $linda_dir wapp-routes.tcl]
-source [file join $linda_dir linda.tcl]
-
-package require linda
+source [file join $script_dir wapp.tcl]
+source [file join $script_dir wapp-routes.tcl]
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 proc env-or {var default} {
@@ -19,6 +15,7 @@ proc env-or {var default} {
 set CI_WORKSPACE    [file normalize [env-or CI_WORKSPACE    [file join $::env(HOME) ci-workspace]]]
 set CI_LOGS         [file normalize [env-or CI_LOGS         [file join $::env(HOME) ci-logs]]]
 set CI_ALLOWED_NETS [env-or CI_ALLOWED_NETS ""]
+set CI_WORKERS      [env-or CI_WORKERS 3]
 
 file mkdir $CI_LOGS
 
@@ -84,7 +81,7 @@ proc json-str {s} {
 # ── CORS + routing ────────────────────────────────────────────────────────────
 proc wapp-before-dispatch-hook {} {
     wapp-reply-extra "Access-Control-Allow-Origin" "*"
-    wapp-reply-extra "Access-Control-Allow-Methods" "GET, POST, OPTIONS"
+    wapp-reply-extra "Access-Control-Allow-Methods" "GET, POST, DELETE, OPTIONS"
     wapp-reply-extra "Access-Control-Allow-Headers" "Content-Type"
     wapp-allow-xorigin-params
 }
@@ -142,7 +139,6 @@ wapp-route POST /job {
         return
     }
 
-    # optional subdir — relative path within repo, e.g. "apps/jscad-web"
     set subdir ""
     if {[regexp {"subdir"\s*:\s*"([^"]+)"} $body -> sd]} {
         if {![regexp {^[a-zA-Z0-9/_-]+$} $sd]} {
@@ -157,9 +153,7 @@ wapp-route POST /job {
     set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s"%s}} \
                     $id [json-str $repo] [json-str $commit] [json-str $script] $subdir_json]
     atomic-write [status-file $id] $status
-
-    linda out ci-jobs [format {{"id":"%s","repo":"%s","commit":"%s","script":"%s"%s}} \
-                           $id $repo $commit $script $subdir_json]
+    after 0 dispatch-jobs
 
     wapp-reply-code "202 Accepted"
     json-ok $status
@@ -175,7 +169,7 @@ wapp-route GET /job/id {
     json-ok [read-file $sf]
 }
 
-# POST /job/:id/kill — send SIGTERM to all processes holding the job lock
+# POST /job/:id/kill — SIGTERM the process group via PID stored in lock file
 wapp-route POST /job/id/kill {
     set sf [status-file $id]
     if {![file exists $sf]} {
@@ -188,10 +182,17 @@ wapp-route POST /job/id/kill {
         return
     }
     set lf [lock-file $id]
-    if {[catch {exec fuser -k -TERM $lf} err] && ![file exists $lf]} {
+    if {![file exists $lf]} {
         json-err "409 Conflict" "lock file not found"
         return
     }
+    set pid [string trim [read-file $lf]]
+    if {![regexp {^\d+$} $pid]} {
+        json-err "409 Conflict" "could not read PID from lock file"
+        return
+    }
+    # Kill the entire process group (ci-run.sh was started with setsid, so PID == PGID)
+    catch {exec kill -TERM -- -$pid}
     regsub {"status":"running"} $data {"status":"killed"} data
     atomic-write $sf $data
     json-ok "{\"killed\":\"$id\"}"
@@ -226,66 +227,9 @@ wapp-route GET /log/id {
     wapp [read-file $lf]
 }
 
-# ── Auto-expiry ──────────────────────────────────────────────────────────────
-# Remove status+log files for finished jobs older than CI_JOB_TTL seconds.
-# "running" jobs whose worker has exited are detected via flock and marked stale.
-set CI_JOB_TTL [env-or CI_JOB_TTL 7200]   ;# default 2 hours
-
-proc job-timestamp {data} {
-    # Use finished if available, else started, else ""
-    if {[regexp {"finished":"([^"]+)"} $data -> ts]} { return $ts }
-    if {[regexp {"started":"([^"]+)"} $data -> ts]} { return $ts }
-    return ""
-}
-
-proc parse-iso-time {ts} {
-    # Strip trailing Z from old UTC timestamps
-    set ts [string trimright $ts Z]
-    clock scan $ts -format %Y-%m-%dT%H:%M:%S
-}
-
-proc job-lock-held {id} {
-    set lf [lock-file $id]
-    if {![file exists $lf]} { return 0 }
-    # flock -n exits 0 if lock is free (worker gone), 1 if held (worker alive)
-    return [catch {exec flock -n $lf true}]
-}
-
-proc expire-old-jobs {} {
-    global CI_LOGS CI_JOB_TTL
-    if {$CI_JOB_TTL <= 0} return
-    set cutoff [expr {[clock seconds] - $CI_JOB_TTL}]
-    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
-        catch {
-            set data [read-file $f]
-            set id [file rootname [file tail $f]]
-            if {[regexp {"status":"running"} $data]} {
-                # Zombie check: if worker's flock is gone, mark stale immediately
-                if {![job-lock-held $id]} {
-                    regsub {"status":"running"} $data {"status":"stale"} data
-                    atomic-write $f $data
-                    file delete -force [lock-file $id]
-                }
-                continue
-            }
-            # Finished/queued/stale: delete if older than TTL
-            set ts [job-timestamp $data]
-            if {$ts eq ""} {
-                if {[file mtime $f] >= $cutoff} continue
-            } else {
-                if {[parse-iso-time $ts] >= $cutoff} continue
-            }
-            file delete -force $f
-            file delete -force [log-file $id]
-            file delete -force [lock-file $id]
-        }
-    }
-}
-
 # GET /jobs  — all jobs, newest-file-first
 wapp-route GET /jobs {
     global CI_LOGS
-    expire-old-jobs
     set files [glob -nocomplain -directory $CI_LOGS *.status]
     set files [lsort -decreasing -command {apply {{a b} {
         expr {[file mtime $a] - [file mtime $b]}
@@ -319,7 +263,7 @@ proc wapp-default {} {
             "repo":   {"type": "string", "description": "Repo name (must exist in ci-workspace)"},
             "commit": {"type": "string", "description": "Full or abbreviated git commit hash"},
             "script": {"type": "string", "description": "npm script to run, e.g. test:run"},
-            "subdir": {"type": "string", "description": "Optional subdirectory to run the script in, e.g. apps/jscad-web. Install always runs at repo root."}
+            "subdir": {"type": "string", "description": "Optional subdirectory to run the script in"}
           },
           "required": ["repo", "commit", "script"]
         },
@@ -327,7 +271,7 @@ proc wapp-default {} {
       },
       {
         "name": "get_job",
-        "description": "Get the current status of a job: queued, running, pass, or fail.",
+        "description": "Get the current status of a job: queued, running, pass, fail, killed, or stale.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -364,6 +308,108 @@ proc wapp-default {} {
     wapp "{\"error\":\"not found\"}"
 }
 
+# ── Job dispatch ──────────────────────────────────────────────────────────────
+# The server directly spawns ci-run.sh for each queued job, up to CI_WORKERS
+# concurrent jobs. Jobs are claimed atomically (status queued→running) before
+# spawning to prevent double-dispatch across loop iterations.
+
+proc count-running {} {
+    global CI_LOGS
+    set n 0
+    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
+        catch {
+            if {[regexp {"status":"running"} [read-file $f]]} { incr n }
+        }
+    }
+    return $n
+}
+
+proc dispatch-jobs {} {
+    global CI_LOGS CI_WORKERS script_dir
+    set running [count-running]
+    if {$running < $CI_WORKERS} {
+        # Process oldest jobs first (FIFO by mtime)
+        set files [glob -nocomplain -directory $CI_LOGS *.status]
+        set files [lsort -command {apply {{a b} {
+            expr {[file mtime $a] - [file mtime $b]}
+        }}} $files]
+        foreach f $files {
+            if {$running >= $CI_WORKERS} break
+            catch {
+                set data [read-file $f]
+                if {![regexp {"status":"queued"} $data]} continue
+                set id [file rootname [file tail $f]]
+                # Atomically claim: mark running + record started time
+                set started [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%S]
+                regsub {"status":"queued"} $data \
+                    "\"status\":\"running\",\"started\":\"$started\"" data
+                atomic-write $f $data
+                # setsid gives ci-run.sh its own process group (PID == PGID) for clean kill
+                exec setsid [file join $script_dir ci-run.sh] $id &
+                incr running
+            }
+        }
+    }
+    after 500 dispatch-jobs
+}
+
+# ── Zombie / expiry maintenance (runs independently of dispatch) ───────────────
+set CI_JOB_TTL [env-or CI_JOB_TTL 7200]
+
+proc job-timestamp {data} {
+    if {[regexp {"finished":"([^"]+)"} $data -> ts]} { return $ts }
+    if {[regexp {"started":"([^"]+)"} $data -> ts]} { return $ts }
+    return ""
+}
+
+proc parse-iso-time {ts} {
+    set ts [string trimright $ts Z]
+    clock scan $ts -format %Y-%m-%dT%H:%M:%S
+}
+
+proc job-lock-held {id} {
+    set lf [lock-file $id]
+    if {![file exists $lf]} { return 0 }
+    return [catch {exec flock -n $lf true}]
+}
+
+proc expire-old-jobs {} {
+    global CI_LOGS CI_JOB_TTL
+    if {$CI_JOB_TTL <= 0} return
+    set cutoff [expr {[clock seconds] - $CI_JOB_TTL}]
+    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
+        catch {
+            set data [read-file $f]
+            set id [file rootname [file tail $f]]
+            if {[regexp {"status":"running"} $data]} {
+                if {![job-lock-held $id]} {
+                    regsub {"status":"running"} $data {"status":"stale"} data
+                    atomic-write $f $data
+                    file delete -force [lock-file $id]
+                }
+                continue
+            }
+            set ts [job-timestamp $data]
+            if {$ts eq ""} {
+                if {[file mtime $f] >= $cutoff} continue
+            } else {
+                if {[parse-iso-time $ts] >= $cutoff} continue
+            }
+            file delete -force $f
+            file delete -force [log-file $id]
+            file delete -force [lock-file $id]
+        }
+    }
+}
+
+proc maintenance {} {
+    expire-old-jobs
+    after 10000 maintenance
+}
+
 # ── Start ─────────────────────────────────────────────────────────────────────
 if {[llength $argv] == 0} { set argv [list -server 0.0.0.0:8080] }
+# Kick off dispatch and maintenance loops; after 100ms gives wapp time to start
+after 100 dispatch-jobs
+after 100 maintenance
 wapp-start $argv

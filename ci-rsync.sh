@@ -16,12 +16,9 @@ set -euo pipefail
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
 CI_WORKTREES="${CI_WORKTREES:-$HOME/ci-worktrees}"
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
-export LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LINDA="${SCRIPT_DIR}/../linda.sh/linda.sh"
 
-mkdir -p "$CI_LOGS" "$LINDA_DIR"
+mkdir -p "$CI_LOGS"
 
 # ── Parse rsync server args ───────────────────────────────────────────────────
 # rsync calls us as: ci-rsync.sh --server <flags> . DEST
@@ -95,11 +92,7 @@ fi
 
 # ── Queue the job ─────────────────────────────────────────────────────────────
 SUBDIR_JSON="${subdir:+,\"subdir\":\"$subdir\"}"
-JOB="{\"id\":\"$ID\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON},\"worktree\":\"$WORKTREE\"}"
-
-STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}}"
+STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON},\"worktree\":\"$WORKTREE\"}"
 printf '%s' "$STATUS" > "$CI_LOGS/$ID.status"
-
-"$LINDA" out ci-jobs <<< "$JOB"
 
 echo "ci-job: $ID queued"

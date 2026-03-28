@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# sci — simple-ci client
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+load_conf() {
+    local loaded=0
+    for f in "${CI_CONF:-}" "./simple-ci.conf" "$HOME/.config/simple-ci.conf" "$SCRIPT_DIR/simple-ci.conf"; do
+        [[ -n "$f" && -f "$f" ]] && { source "$f"; loaded=1; break; }
+    done
+    (( loaded )) || { echo "sci: no simple-ci.conf found" >&2; exit 1; }
+}
+
+# ── Help ──────────────────────────────────────────────────────────────────────
+cmd_help() {
+    case "${1:-}" in
+        stat) cat <<'EOF'
+Usage: sci stat [-w [INTERVAL]] [-n COUNT] [-s STATUS]
+
+  Show job status table.
+
+  -w [INTERVAL]   watch mode, refresh every INTERVAL seconds (default 5)
+  -n COUNT        show last COUNT jobs (default 20)
+  -s STATUS       filter by status: queued, running, pass, fail, killed, stale
+EOF
+            ;;
+        push) cat <<'EOF'
+Usage: sci push REPO[/SUBDIR]/SCRIPT
+
+  Rsync the current directory to the CI server and queue a job.
+  Prints the job ID to stdout.
+
+  Optional env:
+    CI_RSYNC_ARGS   extra rsync args (e.g. --include rules)
+EOF
+            ;;
+        wait) cat <<'EOF'
+Usage: sci wait JOB-ID
+
+  Wait for a job to finish, then print its log to stdout.
+  Exits 0 on pass, 1 on fail/killed, 2 on unexpected status.
+EOF
+            ;;
+        kill) cat <<'EOF'
+Usage: sci kill JOB-ID
+
+  Send SIGTERM to a running job and mark it killed.
+EOF
+            ;;
+        clean) cat <<'EOF'
+Usage: sci clean [-s STATUS] [-a] [-n] [-k COUNT]
+
+  Remove completed jobs via DELETE /job/:id.
+
+  -s STATUS   only remove jobs with this status (fail, pass, queued, killed)
+  -a          remove all non-running jobs (default: only fail + queued)
+  -n          dry run — show what would be deleted without deleting
+  -k COUNT    keep the most recent COUNT matched jobs
+EOF
+            ;;
+        *) cat <<'EOF'
+sci — simple-ci client
+
+Usage: sci <command> [options]
+
+Commands:
+  stat   [-w [INTERVAL]] [-n COUNT] [-s STATUS]   show job status table
+  push   REPO[/SUBDIR]/SCRIPT                     submit a job via rsync
+  wait   JOB-ID                                   wait for job, print log
+  kill   JOB-ID                                   kill a running job
+  clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
+  help   [COMMAND]                                show help
+
+Run 'sci help <command>' for details.
+EOF
+            ;;
+    esac
+}
+
+# ── stat ──────────────────────────────────────────────────────────────────────
+cmd_stat() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+
+    local count=20 watch=0 watch_interval=5 filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -w)
+                watch=1
+                if [[ ${2:-} =~ ^[0-9]+$ ]]; then watch_interval="$2"; shift; fi
+                shift ;;
+            -n) count="${2:?-n requires a count}"; shift 2 ;;
+            -s) filter="${2:?-s requires a status}"; shift 2 ;;
+            -h|--help) cmd_help stat; exit 0 ;;
+            *) echo "sci stat: unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if (( watch )); then
+        exec watch -n "$watch_interval" "$0" stat -n "$count" ${filter:+-s "$filter"}
+    fi
+
+    local json
+    json=$(curl -sf "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
+
+    printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "ID" "STATUS" "TIME" "REPO" "COMMIT" "SCRIPT"
+    printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "--------" "-------" "--------" "--------------------" "--------" "------"
+
+    printf '%s' "$json" | jq -r \
+        --arg filter "$filter" --argjson count "$count" '
+        .jobs
+        | if $filter != "" then map(select(.status == $filter)) else . end
+        | .[0:$count]
+        | .[]
+        | [ .id[0:8]
+          , .status
+          , ((.finished // .started // "") | split("T")[1] // "" | rtrimstr("Z"))
+          , .repo
+          , .commit[0:8]
+          , (if .subdir then .subdir + "/" else "" end) + .script
+          ] | join("|")' \
+    | while IFS='|' read -r id status ts repo commit label; do
+        printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "$id" "$status" "$ts" "$repo" "$commit" "$label"
+    done
+}
+
+# ── push ──────────────────────────────────────────────────────────────────────
+cmd_push() {
+    load_conf
+    : "${CI_HOST:?CI_HOST must be set in simple-ci.conf}"
+    : "${CI_REMOTE_SCRIPT:?CI_REMOTE_SCRIPT must be set in simple-ci.conf}"
+
+    if [[ $# -ne 1 ]]; then cmd_help push >&2; exit 1; fi
+
+    local tmp
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+
+    # shellcheck disable=SC2086
+    rsync --rsync-path="$CI_REMOTE_SCRIPT" \
+        -a ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
+        . "$CI_HOST:$1" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
+
+    cat "$tmp" >&2
+    sed -n 's/ci-job: \([0-9a-f]*\) queued.*/\1/p' "$tmp"
+}
+
+# ── wait ──────────────────────────────────────────────────────────────────────
+cmd_wait() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+
+    if [[ $# -ne 1 ]]; then cmd_help wait >&2; exit 1; fi
+
+    local id="$1" interval="${CI_WAIT_INTERVAL:-5}"
+
+    printf 'sci: waiting for job %s' "$id" >&2
+
+    while true; do
+        local resp state
+        resp=$(curl -sf "$CI_SERVER_URL/job/$id" 2>/dev/null) || {
+            printf '\nsci: server unreachable, retrying...\n' >&2
+            sleep "$interval"
+            continue
+        }
+        state=$(printf '%s' "$resp" | jq -r '.status')
+        case "$state" in
+            queued|running)
+                printf '.' >&2
+                sleep "$interval"
+                ;;
+            pass)
+                printf ' %s\n' "$state" >&2
+                curl -sf "$CI_SERVER_URL/log/$id"
+                exit 0
+                ;;
+            fail|killed)
+                printf ' %s\n' "$state" >&2
+                curl -sf "$CI_SERVER_URL/log/$id"
+                exit 1
+                ;;
+            *)
+                printf '\nsci: unexpected status: %s\n' "$state" >&2
+                exit 2
+                ;;
+        esac
+    done
+}
+
+# ── kill ──────────────────────────────────────────────────────────────────────
+cmd_kill() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+
+    if [[ $# -ne 1 ]]; then cmd_help kill >&2; exit 1; fi
+
+    curl -sf -X POST "$CI_SERVER_URL/job/$1/kill" \
+        | jq -r '"killed: \(.killed)"'
+}
+
+# ── clean ─────────────────────────────────────────────────────────────────────
+cmd_clean() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+
+    local filter="" all=0 dry_run=0 keep=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s) filter="${2:?-s requires a status}"; shift 2 ;;
+            -a) all=1; shift ;;
+            -n) dry_run=1; shift ;;
+            -k) keep="${2:?-k requires a count}"; shift 2 ;;
+            -h|--help) cmd_help clean; exit 0 ;;
+            *) echo "sci clean: unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    local json
+    json=$(curl -sf "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
+
+    # Build jq filter: exclude running, apply status filter or default (fail+queued), apply -k
+    local matched
+    matched=$(printf '%s' "$json" | jq -r \
+        --arg filter "$filter" --argjson all "$all" --argjson keep "$keep" '
+        .jobs
+        | map(select(.status != "running"))
+        | if $filter != "" then map(select(.status == $filter))
+          elif $all == 0 then map(select(.status == "fail" or .status == "queued" or .status == "killed"))
+          else . end
+        | if $keep > 0 then .[$keep:] else . end
+        | .[]
+        | [.id, .status, .repo] | join("|")')
+
+    if [[ -z "$matched" ]]; then
+        echo "sci clean: nothing to clean"
+        exit 0
+    fi
+
+    local count
+    count=$(echo "$matched" | wc -l)
+
+    if (( dry_run )); then
+        echo "sci clean: would delete $count job(s):"
+        while IFS='|' read -r id status repo; do
+            printf '  %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo"
+        done <<< "$matched"
+        exit 0
+    fi
+
+    while IFS='|' read -r id status repo; do
+        if curl -sf -X DELETE "$CI_SERVER_URL/job/$id" > /dev/null; then
+            printf 'deleted %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo"
+        else
+            printf 'FAILED  %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo" >&2
+        fi
+    done <<< "$matched"
+
+    echo "sci clean: done"
+}
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    stat)             cmd_stat  "$@" ;;
+    push)             cmd_push  "$@" ;;
+    wait)             cmd_wait  "$@" ;;
+    kill)             cmd_kill  "$@" ;;
+    clean)            cmd_clean "$@" ;;
+    help|-h|--help)   cmd_help  "$@" ;;
+    *)
+        echo "sci: unknown command: $cmd  (try 'sci help')" >&2
+        exit 1
+        ;;
+esac

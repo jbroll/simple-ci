@@ -175,6 +175,28 @@ wapp-route GET /job/id {
     json-ok [read-file $sf]
 }
 
+# POST /job/:id/kill — send SIGTERM to all processes holding the job lock
+wapp-route POST /job/id/kill {
+    set sf [status-file $id]
+    if {![file exists $sf]} {
+        json-err "404 Not Found" "job not found: $id"
+        return
+    }
+    set data [read-file $sf]
+    if {![regexp {"status":"running"} $data]} {
+        json-err "409 Conflict" "job is not running"
+        return
+    }
+    set lf [lock-file $id]
+    if {[catch {exec fuser -k -TERM $lf} err] && ![file exists $lf]} {
+        json-err "409 Conflict" "lock file not found"
+        return
+    }
+    regsub {"status":"running"} $data {"status":"killed"} data
+    atomic-write $sf $data
+    json-ok "{\"killed\":\"$id\"}"
+}
+
 # DELETE /job/:id — remove a job's status and log files
 wapp-route DELETE /job/id {
     set sf [status-file $id]

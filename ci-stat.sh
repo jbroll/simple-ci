@@ -58,29 +58,21 @@ JSON=$(curl -sf "$CI_SERVER_URL/jobs") || { echo "ci-stat: server unreachable" >
 printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "ID" "STATUS" "TIME" "REPO" "COMMIT" "SCRIPT"
 printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "--------" "-------" "--------" "--------------------" "--------" "------"
 
-# Parse with sed — no jq dependency
-printf '%s' "$JSON" | sed 's/},\?{/}\n{/g' | head -n "$COUNT" | while IFS= read -r line; do
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    status=$(printf '%s' "$line" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
-    repo=$(printf '%s' "$line" | sed -n 's/.*"repo":"\([^"]*\)".*/\1/p')
-    commit=$(printf '%s' "$line" | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p')
-    script=$(printf '%s' "$line" | sed -n 's/.*"script":"\([^"]*\)".*/\1/p')
-    subdir=$(printf '%s' "$line" | sed -n 's/.*"subdir":"\([^"]*\)".*/\1/p')
+jq_filter='
+  .jobs
+  | if $filter != "" then map(select(.status == $filter)) else . end
+  | .[0:$count]
+  | .[]
+  | [ .id[0:8]
+    , .status
+    , ((.finished // .started // "") | split("T")[1] // "" | rtrimstr("Z"))
+    , .repo
+    , .commit[0:8]
+    , (if .subdir then .subdir + "/" else "" end) + .script
+    ] | @tsv'
 
-    [[ -z "$id" ]] && continue
-    [[ -n "$STATUS_FILTER" && "$status" != "$STATUS_FILTER" ]] && continue
-
-    finished=$(printf '%s' "$line" | sed -n 's/.*"finished":"\([^"]*\)".*/\1/p')
-    started=$(printf '%s' "$line" | sed -n 's/.*"started":"\([^"]*\)".*/\1/p')
-    # Show finished time if available, else started, else blank
-    ts="${finished:-$started}"
-    # Strip date prefix and trailing Z for compact display (HH:MM:SS)
-    ts="${ts##*T}"
-    ts="${ts%Z}"
-
-    label="$script"
-    [[ -n "$subdir" ]] && label="$subdir/$script"
-
-    printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' \
-        "${id:0:8}" "$status" "$ts" "$repo" "${commit:0:8}" "$label"
+printf '%s' "$JSON" \
+  | jq -r --arg filter "$STATUS_FILTER" --argjson count "$COUNT" "$jq_filter" \
+  | while IFS=$'\t' read -r id status ts repo commit label; do
+    printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "$id" "$status" "$ts" "$repo" "$commit" "$label"
 done

@@ -49,12 +49,17 @@ printf '%s' "$$" >&9
         git -C "$CI_WORKSPACE/$REPO" worktree add "$WORKTREE" "$COMMIT"
     fi
 
+    # Source per-machine service endpoints (ORS_URL, TTS_SERVICE_URL, etc.)
+    SERVICES_FILE="$HOME/.config/wicketmap/services.env"
+    # shellcheck disable=SC1090
+    [[ -f "$SERVICES_FILE" ]] && set -a && source "$SERVICES_FILE" && set +a
+
     cd "$WORKTREE" && timeout "${CI_INSTALL_TIMEOUT:-600}" npm install
     cd "$RUNDIR"   && timeout "${CI_JOB_TIMEOUT:-3600}"   npm run "$SCRIPT"
 
 ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
-FINISHED="$(date +%Y-%m-%dT%H:%M:%S)"
+FINISHED="$(date -u +%Y-%m-%dT%H:%M:%S)"
 { echo ""; echo "=== exit $EXIT_CODE | $FINISHED ==="; } >> "$LOGFILE"
 
 STATUS=$([ "$EXIT_CODE" -eq 0 ] && echo "pass" || echo "fail")

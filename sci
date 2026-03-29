@@ -113,13 +113,21 @@ cmd_stat() {
 
     printf '%s' "$json" | jq -r \
         --arg filter "$filter" --argjson count "$count" '
+        .now as $now |
         .jobs
         | if $filter != "" then map(select(.status == $filter)) else . end
         | .[0:$count]
         | .[]
         | [ .id[0:8]
           , .status
-          , ((.finished // .started // "") | split("T")[1] // "" | rtrimstr("Z"))
+          , (if .status == "running" and .started_epoch then
+               ($now - .started_epoch) | floor
+               | if . < 60 then "\(.)s"
+                 elif . < 3600 then "\(. / 60 | floor)m\(. % 60 | tostring | if length == 1 then "0" + . else . end)s"
+                 else "\(. / 3600 | floor)h\(. % 3600 / 60 | floor | tostring | if length == 1 then "0" + . else . end)m"
+                 end
+             elif .finished then (.finished | split("T")[1] | rtrimstr("Z"))
+             else "" end)
           , .repo
           , .commit[0:8]
           , (if .subdir then .subdir + "/" else "" end) + .script

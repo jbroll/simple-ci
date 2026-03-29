@@ -238,7 +238,7 @@ wapp-route GET /jobs {
     foreach f $files {
         catch { lappend items [read-file $f] }
     }
-    json-ok "{\"jobs\":\[[join $items ,]\]}"
+    json-ok "{\"now\":[clock seconds],\"jobs\":\[[join $items ,]\]}"
 }
 
 # GET /health
@@ -340,9 +340,10 @@ proc dispatch-jobs {} {
                 if {![regexp {"status":"queued"} $data]} continue
                 set id [file rootname [file tail $f]]
                 # Atomically claim: mark running + record started time
-                set started [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%S]
+                set epoch [clock seconds]
+                set started [clock format $epoch -format %Y-%m-%dT%H:%M:%S -gmt 1]
                 regsub {"status":"queued"} $data \
-                    "\"status\":\"running\",\"started\":\"$started\"" data
+                    "\"status\":\"running\",\"started\":\"$started\",\"started_epoch\":$epoch" data
                 atomic-write $f $data
                 # setsid gives ci-run.sh its own process group (PID == PGID) for clean kill
                 exec setsid [file join $script_dir ci-run.sh] $id &

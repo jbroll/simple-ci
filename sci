@@ -9,7 +9,7 @@ CURL=(curl -sf --connect-timeout 5 --max-time 30)
 # ── Config ────────────────────────────────────────────────────────────────────
 load_conf() {
     local loaded=0
-    for f in "${CI_CONF:-}" "./simple-ci.conf" "$HOME/.config/simple-ci.conf" "$SCRIPT_DIR/simple-ci.conf"; do
+    for f in "${CI_CONF:-}" "./ci/simple-ci.conf" "$HOME/.config/simple-ci.conf" "$SCRIPT_DIR/simple-ci.conf"; do
         [[ -n "$f" && -f "$f" ]] && { source "$f"; loaded=1; break; }
     done
     (( loaded )) || { echo "sci: no simple-ci.conf found" >&2; exit 1; }

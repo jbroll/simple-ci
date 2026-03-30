@@ -49,10 +49,10 @@ printf '%s' "$$" >&9
         git -C "$CI_WORKSPACE/$REPO" worktree add "$WORKTREE" "$COMMIT"
     fi
 
-    # Source per-machine service endpoints (ORS_URL, TTS_SERVICE_URL, etc.)
-    SERVICES_FILE="$HOME/.config/wicketmap/services.env"
+    # Source project CI hook if present (project-specific env setup)
+    CI_HOOK="$WORKTREE/ci/setup.sh"
     # shellcheck disable=SC1090
-    [[ -f "$SERVICES_FILE" ]] && set -a && source "$SERVICES_FILE" && set +a
+    [[ -f "$CI_HOOK" ]] && source "$CI_HOOK"
 
     cd "$WORKTREE" && timeout "${CI_INSTALL_TIMEOUT:-600}" npm install
     cd "$RUNDIR"   && timeout "${CI_JOB_TIMEOUT:-3600}"   npm run "$SCRIPT"

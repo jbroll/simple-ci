@@ -128,7 +128,7 @@ Configuration is sourced as shell variables in order; first file found wins:
 
 ### Multi-host failover (`CI_HOSTS`)
 
-When defined, `CI_HOSTS` is an ordered array of build hosts. `resolve_ci_host()` probes each in order and sets `CI_HOST` + `CI_SERVER_URL` to the first reachable one. Two entry formats are supported:
+When defined, `CI_HOSTS` is an ordered array of build hosts. `sci` has a built-in `resolve_ci_host()` that probes each in order and sets `CI_HOST` + `CI_SERVER_URL` to the first reachable one. Two entry formats are supported:
 
 ```bash
 CI_HOSTS=(
@@ -143,7 +143,7 @@ CI_HOSTS=(
 
 `CI_HOST`, `CI_REMOTE_SCRIPT`, and `CI_SERVER_URL` should still be set as defaults for when `CI_HOSTS` is not defined or no host is reachable.
 
-**Example project config:**
+**Example project config** (`./ci/simple-ci.conf`):
 
 ```bash
 CI_HOSTS=(
@@ -151,16 +151,10 @@ CI_HOSTS=(
     "home.rkroll.com:tunnel:8080"
 )
 
-# Defaults (used when CI_HOSTS is not defined)
+# Defaults (used when no CI_HOSTS entry is reachable)
 CI_HOST=gpu
 CI_REMOTE_SCRIPT=~/src/simple-ci/ci-rsync.sh
 CI_SERVER_URL=http://gpu:8080
-
-# Include gitignored generated test data
-CI_RSYNC_ARGS="
-  --include=/fixtures/
-  --include=/fixtures/**
-"
 ```
 
 ## Client Usage

@@ -6,6 +6,68 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 CURL=(curl -sf --connect-timeout 5 --max-time 30)
 
+# ── SSH tunnel management ────────────────────────────────────────────────────
+_CI_TUNNEL_PID=""
+
+_ci_tunnel_cleanup() {
+    [[ -n "$_CI_TUNNEL_PID" ]] && kill "$_CI_TUNNEL_PID" 2>/dev/null || true
+}
+
+# Open an SSH tunnel and set CI_SERVER_URL to the local endpoint.
+# Usage: _ci_open_tunnel ssh_host remote_port
+_ci_open_tunnel() {
+    local host="$1" remote_port="$2"
+    local local_port=18080
+
+    # Find a free local port starting at 18080
+    while ss -tln "sport = :$local_port" 2>/dev/null | grep -q "$local_port"; do
+        (( local_port++ ))
+        (( local_port > 18099 )) && return 1
+    done
+
+    ssh -fNL "${local_port}:localhost:${remote_port}" "$host" 2>/dev/null || return 1
+    _CI_TUNNEL_PID=$(ss -tlnp "sport = :$local_port" 2>/dev/null \
+        | grep -oP 'pid=\K[0-9]+' | head -1)
+
+    # Verify the tunnel is up
+    if ! curl -sf --max-time 3 "http://localhost:${local_port}/health" >/dev/null 2>&1; then
+        _ci_tunnel_cleanup
+        _CI_TUNNEL_PID=""
+        return 1
+    fi
+
+    CI_SERVER_URL="http://localhost:${local_port}"
+    trap _ci_tunnel_cleanup EXIT
+    return 0
+}
+
+# ── Host resolution ──────────────────────────────────────────────────────────
+# Probe CI_HOSTS entries in order; set CI_HOST + CI_SERVER_URL to first reachable.
+# Entry formats:
+#   "host:http://url"       — direct HTTP, probe $url/health
+#   "host:tunnel:port"      — SSH tunnel to remote port, API via localhost
+resolve_ci_host() {
+    for entry in "${CI_HOSTS[@]}"; do
+        local host="${entry%%:*}"
+        local rest="${entry#*:}"
+
+        if [[ "$rest" == tunnel:* ]]; then
+            local remote_port="${rest#tunnel:}"
+            if _ci_open_tunnel "$host" "$remote_port"; then
+                CI_HOST="$host"
+                return 0
+            fi
+        else
+            if curl -sf --max-time 2 "$rest/health" >/dev/null 2>&1; then
+                CI_HOST="$host"
+                CI_SERVER_URL="$rest"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 # ── Config ────────────────────────────────────────────────────────────────────
 load_conf() {
     local loaded=0
@@ -15,7 +77,7 @@ load_conf() {
     (( loaded )) || { echo "sci: no simple-ci.conf found" >&2; exit 1; }
 
     # If CI_HOSTS array is defined, probe in order and set CI_HOST + CI_SERVER_URL
-    if declare -p CI_HOSTS &>/dev/null && type -t resolve_ci_host &>/dev/null; then
+    if declare -p CI_HOSTS &>/dev/null 2>&1; then
         resolve_ci_host || echo "sci: warning: no CI host reachable" >&2
     fi
 }

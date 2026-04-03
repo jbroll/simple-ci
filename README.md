@@ -128,7 +128,7 @@ Configuration is sourced as shell variables in order; first file found wins:
 
 ### Multi-host failover (`CI_HOSTS`)
 
-When defined, `CI_HOSTS` is an ordered array of build hosts. `sci` has a built-in `resolve_ci_host()` that probes each in order and sets `CI_HOST` + `CI_SERVER_URL` to the first reachable one. Two entry formats are supported:
+When defined, `CI_HOSTS` is an ordered array of build hosts. `sci` probes each entry in order and uses the first reachable one. Two entry formats are supported:
 
 ```bash
 CI_HOSTS=(

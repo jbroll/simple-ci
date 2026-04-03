@@ -13,6 +13,11 @@ load_conf() {
         [[ -n "$f" && -f "$f" ]] && { source "$f"; loaded=1; break; }
     done
     (( loaded )) || { echo "sci: no simple-ci.conf found" >&2; exit 1; }
+
+    # If CI_HOSTS array is defined, probe in order and set CI_HOST + CI_SERVER_URL
+    if declare -p CI_HOSTS &>/dev/null && type -t resolve_ci_host &>/dev/null; then
+        resolve_ci_host || echo "sci: warning: no CI host reachable" >&2
+    fi
 }
 
 # ── Help ──────────────────────────────────────────────────────────────────────
@@ -76,6 +81,12 @@ Commands:
   help   [COMMAND]                                show help
 
 Run 'sci help <command>' for details.
+
+Config searched: $CI_CONF, ./ci/simple-ci.conf, ~/.config/simple-ci.conf, <script-dir>/simple-ci.conf
+
+CI_HOSTS entries:
+  "host:http://url"         direct HTTP
+  "host:tunnel:port"        SSH tunnel to remote port, API via localhost
 EOF
             ;;
     esac

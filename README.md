@@ -124,10 +124,34 @@ Configuration is sourced as shell variables in order; first file found wins:
 | `CI_ALLOWED_NETS` | server | Space-separated IP prefixes allowed to reach the server; empty means allow all |
 | `CI_WAIT_INTERVAL` | `sci wait` | Poll interval in seconds (default: 5) |
 | `CI_JOB_TTL` | server | Seconds before finished jobs are expired (default: 7200) |
+| `CI_HOSTS` | `sci` (all) | Ordered array of hosts to try; first reachable wins (see below) |
+
+### Multi-host failover (`CI_HOSTS`)
+
+When defined, `CI_HOSTS` is an ordered array of build hosts. `resolve_ci_host()` probes each in order and sets `CI_HOST` + `CI_SERVER_URL` to the first reachable one. Two entry formats are supported:
+
+```bash
+CI_HOSTS=(
+    "gpu:http://gpu:8080"              # direct HTTP — host can reach API directly
+    "home.rkroll.com:tunnel:8080"      # SSH tunnel — no direct HTTP, SSH-only access
+)
+```
+
+**Direct entries** (`host:http://url`) probe `$url/health` with a 2-second timeout.
+
+**Tunnel entries** (`host:tunnel:remote_port`) open an SSH tunnel (`ssh -fNL local:localhost:remote_port host`), then probe through the tunnel. The local port is auto-selected starting at 18080. The tunnel process is cleaned up on exit via trap.
+
+`CI_HOST`, `CI_REMOTE_SCRIPT`, and `CI_SERVER_URL` should still be set as defaults for when `CI_HOSTS` is not defined or no host is reachable.
 
 **Example project config:**
 
 ```bash
+CI_HOSTS=(
+    "gpu:http://gpu:8080"
+    "home.rkroll.com:tunnel:8080"
+)
+
+# Defaults (used when CI_HOSTS is not defined)
 CI_HOST=gpu
 CI_REMOTE_SCRIPT=~/src/simple-ci/ci-rsync.sh
 CI_SERVER_URL=http://gpu:8080

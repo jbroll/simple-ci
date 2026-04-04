@@ -7,37 +7,48 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 CURL=(curl -sf --connect-timeout 5 --max-time 30)
 
 # ── SSH tunnel management ────────────────────────────────────────────────────
-_CI_TUNNEL_PID=""
+# Tunnels are long-lived: once opened, they persist across sci invocations.
+# _ci_open_tunnel first checks for an existing working tunnel before opening new.
 
-_ci_tunnel_cleanup() {
-    [[ -n "$_CI_TUNNEL_PID" ]] && kill "$_CI_TUNNEL_PID" 2>/dev/null || true
-}
-
-# Open an SSH tunnel and set CI_SERVER_URL to the local endpoint.
+# Open (or reuse) an SSH tunnel and set CI_SERVER_URL to the local endpoint.
 # Usage: _ci_open_tunnel ssh_host remote_port
 _ci_open_tunnel() {
     local host="$1" remote_port="$2"
-    local local_port=18080
+    local local_port
 
-    # Find a free local port starting at 18080
+    # Reuse an existing working tunnel on 18080-18099
+    for local_port in $(seq 18080 18099); do
+        if ss -tln "sport = :$local_port" 2>/dev/null | grep -q "$local_port"; then
+            if curl -sf --max-time 3 "http://localhost:${local_port}/health" >/dev/null 2>&1; then
+                CI_SERVER_URL="http://localhost:${local_port}"
+                return 0
+            fi
+        fi
+    done
+
+    # No working tunnel found — find a free port and open a new one
+    local_port=18080
     while ss -tln "sport = :$local_port" 2>/dev/null | grep -q "$local_port"; do
         (( local_port++ ))
         (( local_port > 18099 )) && return 1
     done
 
     ssh -fNL "${local_port}:localhost:${remote_port}" "$host" 2>/dev/null || return 1
-    _CI_TUNNEL_PID=$(ss -tlnp "sport = :$local_port" 2>/dev/null \
-        | grep -oP 'pid=\K[0-9]+' | head -1)
 
     # Verify the tunnel is up
+    sleep 0.5
     if ! curl -sf --max-time 3 "http://localhost:${local_port}/health" >/dev/null 2>&1; then
-        _ci_tunnel_cleanup
-        _CI_TUNNEL_PID=""
+        # Kill the tunnel we just opened (it's broken)
+        local pid
+        pid=$(ss -tlnp "sport = :$local_port" 2>/dev/null \
+            | grep -oP 'pid=\K[0-9]+' | head -1)
+        [[ -n "${pid:-}" ]] && kill "$pid" 2>/dev/null || true
         return 1
     fi
 
+    # Tunnel is long-lived — intentionally not cleaned up on exit so
+    # subsequent sci invocations can reuse it.
     CI_SERVER_URL="http://localhost:${local_port}"
-    trap _ci_tunnel_cleanup EXIT
     return 0
 }
 

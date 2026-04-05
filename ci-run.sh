@@ -28,6 +28,35 @@ WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
 RUNDIR="${WORKTREE}${SUBDIR:+/$SUBDIR}"
 EXIT_CODE=0
 
+# Kill every process in our session (not just our process group).
+# ci-run.sh is started with setsid so $$ == SID. npm run spawns the
+# script command via `sh -c` with setpgid, creating a new process group
+# that escapes a plain `kill -- -$$`.  Session-wide kill catches them all.
+_cleanup_done=0
+do-cleanup() {
+    [[ $_cleanup_done -eq 1 ]] && return
+    _cleanup_done=1
+    trap '' TERM
+    pkill -s $$ -TERM 2>/dev/null || true
+    sleep 1
+    for pid in $(pgrep -s $$ 2>/dev/null); do
+        [ "$pid" != "$$" ] && kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
+# SIGTERM trap: fired when the kill endpoint signals our process group.
+# Bash defers the signal until the foreground subshell exits, so REPO,
+# WORKTREE, and LOCKFILE are guaranteed set by the time this runs.
+on-term() {
+    do-cleanup
+    [[ -n "${WORKTREE:-}" ]] && \
+        git -C "$CI_WORKSPACE/$REPO" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "${LOCKFILE:-}"
+    exit 143
+}
+trap on-term TERM
+
 # Acquire lock; write PID so server can kill the process group
 exec 9>"$LOCKFILE"
 flock 9
@@ -59,18 +88,9 @@ printf '%s' "$$" >&9
 
 ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
-# Kill any orphaned descendants (e.g. node workers spawned by npm run).
-# ci-run.sh was started via `setsid` so $$ is the session/group leader.
-# Ignore SIGTERM so this shell survives the group kill, then SIGKILL
-# only the remaining children (SIGKILL can't be trapped, so exclude self).
-trap '' TERM
-kill -TERM -- -$$ 2>/dev/null || true
-sleep 1
-# SIGKILL stragglers — must exclude self since SIGKILL is not trappable
-for pid in $(pgrep -g $$ 2>/dev/null); do
-    [ "$pid" != "$$" ] && kill -KILL "$pid" 2>/dev/null || true
-done
-trap - TERM
+# Kill any orphaned descendants in our session (npm run may have created
+# child processes in a new process group via setpgid).
+do-cleanup
 
 FINISHED="$(date -u +%Y-%m-%dT%H:%M:%S)"
 { echo ""; echo "=== exit $EXIT_CODE | $FINISHED ==="; } >> "$LOGFILE"

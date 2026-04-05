@@ -49,6 +49,22 @@ proc status-file {id} {
     return [file join $CI_LOGS "${id}.status"]
 }
 
+# Resolve a full or prefix job ID to the canonical full ID.
+# Accepts 4–16 lowercase hex chars; prefix must match exactly one job.
+proc resolve-job-id {prefix} {
+    global CI_LOGS
+    if {![regexp {^[0-9a-f]{4,16}$} $prefix]} {
+        return -code error "invalid job id: $prefix"
+    }
+    if {[string length $prefix] == 16} {
+        return $prefix
+    }
+    set matches [glob -nocomplain -directory $CI_LOGS "${prefix}*.status"]
+    if {[llength $matches] == 0} { return -code error "job not found: $prefix" }
+    if {[llength $matches] >  1} { return -code error "ambiguous prefix: $prefix matches [llength $matches] jobs" }
+    return [file rootname [file tail [lindex $matches 0]]]
+}
+
 proc log-file {id} {
     global CI_LOGS
     return [file join $CI_LOGS "${id}.log"]
@@ -166,13 +182,12 @@ wapp-route POST /job {
         wapp-reply-code "202 Accepted"
         json-ok $status
 
-    } elseif {[regexp {^([0-9a-f]+)/kill$} $tail -> id]} {
+    } elseif {[regexp {^([0-9a-f]{4,16})/kill$} $tail -> prefix]} {
         # ── Kill job ──────────────────────────────────────────────────────────
-        set sf [status-file $id]
-        if {![file exists $sf]} {
-            json-err "404 Not Found" "job not found: $id"
-            return
+        if {[catch {resolve-job-id $prefix} id]} {
+            json-err "404 Not Found" $id; return
         }
+        set sf [status-file $id]
         set data [read-file $sf]
         if {![regexp {"status":"running"} $data]} {
             json-err "409 Conflict" "job is not running"
@@ -201,21 +216,18 @@ wapp-route POST /job {
 
 # GET /job/:id
 wapp-route GET /job/id {
-    set sf [status-file $id]
-    if {![file exists $sf]} {
-        json-err "404 Not Found" "job not found: $id"
-        return
+    if {[catch {resolve-job-id $id} id]} {
+        json-err "404 Not Found" $id; return
     }
-    json-ok [read-file $sf]
+    json-ok [read-file [status-file $id]]
 }
 
 # DELETE /job/:id — remove a job's status and log files
 wapp-route DELETE /job/id {
-    set sf [status-file $id]
-    if {![file exists $sf]} {
-        json-err "404 Not Found" "job not found: $id"
-        return
+    if {[catch {resolve-job-id $id} id]} {
+        json-err "404 Not Found" $id; return
     }
+    set sf [status-file $id]
     set data [read-file $sf]
     if {[regexp {"status":"running"} $data]} {
         json-err "409 Conflict" "cannot delete a running job"
@@ -229,6 +241,9 @@ wapp-route DELETE /job/id {
 
 # GET /log/:id
 wapp-route GET /log/id {
+    if {[catch {resolve-job-id $id} id]} {
+        json-err "404 Not Found" $id; return
+    }
     set lf [log-file $id]
     if {![file exists $lf]} {
         json-err "404 Not Found" "log not found: $id"

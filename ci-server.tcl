@@ -117,46 +117,86 @@ proc get-body {} {
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-# POST /job   body: {"repo":"wicketmap","commit":"abc123","script":"test:run"}
+# POST /job              body: {"repo":"...","commit":"...","script":"..."}
+# POST /job/:id/kill    — SIGTERM the process group via PID stored in lock file
+#
+# Both use POST to page "job", so wapp-route would collide if defined separately.
+# Dispatch on PATH_TAIL: empty → create, "<id>/kill" → kill.
 wapp-route POST /job {
-    set body [get-body]
-    if {![regexp {"repo"\s*:\s*"([^"]+)"} $body -> repo] ||
-        ![regexp {"commit"\s*:\s*"([^"]+)"} $body -> commit] ||
-        ![regexp {"script"\s*:\s*"([^"]+)"} $body -> script]} {
-        json-err "400 Bad Request" "body must contain repo, commit, and script"
-        return
-    }
-    if {![valid-repo $repo]} {
-        json-err "400 Bad Request" "repo not found in ci-workspace: $repo"
-        return
-    }
-    if {![regexp {^[0-9a-f]{6,40}$} $commit]} {
-        json-err "400 Bad Request" "invalid commit hash (lowercase hex, 6-40 chars)"
-        return
-    }
-    if {![regexp {^[a-zA-Z0-9_-]+$} $script]} {
-        json-err "400 Bad Request" "invalid script name"
-        return
-    }
+    set tail [string trim [wapp-param PATH_TAIL] /]
 
-    set subdir ""
-    if {[regexp {"subdir"\s*:\s*"([^"]+)"} $body -> sd]} {
-        if {![regexp {^[a-zA-Z0-9/_-]+$} $sd]} {
-            json-err "400 Bad Request" "subdir must contain only alphanumeric, /, _, - characters"
+    if {$tail eq ""} {
+        # ── Create job ────────────────────────────────────────────────────────
+        set body [get-body]
+        if {![regexp {"repo"\s*:\s*"([^"]+)"} $body -> repo] ||
+            ![regexp {"commit"\s*:\s*"([^"]+)"} $body -> commit] ||
+            ![regexp {"script"\s*:\s*"([^"]+)"} $body -> script]} {
+            json-err "400 Bad Request" "body must contain repo, commit, and script"
             return
         }
-        set subdir $sd
+        if {![valid-repo $repo]} {
+            json-err "400 Bad Request" "repo not found in ci-workspace: $repo"
+            return
+        }
+        if {![regexp {^[0-9a-f]{6,40}$} $commit]} {
+            json-err "400 Bad Request" "invalid commit hash (lowercase hex, 6-40 chars)"
+            return
+        }
+        if {![regexp {^[a-zA-Z0-9_-]+$} $script]} {
+            json-err "400 Bad Request" "invalid script name"
+            return
+        }
+
+        set subdir ""
+        if {[regexp {"subdir"\s*:\s*"([^"]+)"} $body -> sd]} {
+            if {![regexp {^[a-zA-Z0-9/_-]+$} $sd]} {
+                json-err "400 Bad Request" "subdir must contain only alphanumeric, /, _, - characters"
+                return
+            }
+            set subdir $sd
+        }
+
+        set id [random-id]
+        set subdir_json [expr {$subdir ne "" ? ",\"subdir\":\"[json-str $subdir]\"" : ""}]
+        set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s"%s}} \
+                        $id [json-str $repo] [json-str $commit] [json-str $script] $subdir_json]
+        atomic-write [status-file $id] $status
+        after 0 dispatch-jobs
+
+        wapp-reply-code "202 Accepted"
+        json-ok $status
+
+    } elseif {[regexp {^([0-9a-f]+)/kill$} $tail -> id]} {
+        # ── Kill job ──────────────────────────────────────────────────────────
+        set sf [status-file $id]
+        if {![file exists $sf]} {
+            json-err "404 Not Found" "job not found: $id"
+            return
+        }
+        set data [read-file $sf]
+        if {![regexp {"status":"running"} $data]} {
+            json-err "409 Conflict" "job is not running"
+            return
+        }
+        set lf [lock-file $id]
+        if {![file exists $lf]} {
+            json-err "409 Conflict" "lock file not found"
+            return
+        }
+        set pid [string trim [read-file $lf]]
+        if {![regexp {^\d+$} $pid]} {
+            json-err "409 Conflict" "could not read PID from lock file"
+            return
+        }
+        # Kill the entire process group (ci-run.sh was started with setsid, so PID == PGID)
+        catch {exec kill -TERM -- -$pid}
+        regsub {"status":"running"} $data {"status":"killed"} data
+        atomic-write $sf $data
+        json-ok "{\"killed\":\"$id\"}"
+
+    } else {
+        json-err "404 Not Found" "not found"
     }
-
-    set id [random-id]
-    set subdir_json [expr {$subdir ne "" ? ",\"subdir\":\"[json-str $subdir]\"" : ""}]
-    set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s"%s}} \
-                    $id [json-str $repo] [json-str $commit] [json-str $script] $subdir_json]
-    atomic-write [status-file $id] $status
-    after 0 dispatch-jobs
-
-    wapp-reply-code "202 Accepted"
-    json-ok $status
 }
 
 # GET /job/:id
@@ -167,35 +207,6 @@ wapp-route GET /job/id {
         return
     }
     json-ok [read-file $sf]
-}
-
-# POST /job/:id/kill — SIGTERM the process group via PID stored in lock file
-wapp-route POST /job/id/kill {
-    set sf [status-file $id]
-    if {![file exists $sf]} {
-        json-err "404 Not Found" "job not found: $id"
-        return
-    }
-    set data [read-file $sf]
-    if {![regexp {"status":"running"} $data]} {
-        json-err "409 Conflict" "job is not running"
-        return
-    }
-    set lf [lock-file $id]
-    if {![file exists $lf]} {
-        json-err "409 Conflict" "lock file not found"
-        return
-    }
-    set pid [string trim [read-file $lf]]
-    if {![regexp {^\d+$} $pid]} {
-        json-err "409 Conflict" "could not read PID from lock file"
-        return
-    }
-    # Kill the entire process group (ci-run.sh was started with setsid, so PID == PGID)
-    catch {exec kill -TERM -- -$pid}
-    regsub {"status":"running"} $data {"status":"killed"} data
-    atomic-write $sf $data
-    json-ok "{\"killed\":\"$id\"}"
 }
 
 # DELETE /job/:id — remove a job's status and log files
@@ -313,43 +324,37 @@ proc wapp-default {} {
 # concurrent jobs. Jobs are claimed atomically (status queued→running) before
 # spawning to prevent double-dispatch across loop iterations.
 
-proc count-running {} {
-    global CI_LOGS
-    set n 0
-    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
-        catch {
-            if {[regexp {"status":"running"} [read-file $f]]} { incr n }
-        }
-    }
-    return $n
-}
-
 proc dispatch-jobs {} {
     global CI_LOGS CI_WORKERS script_dir
-    set running [count-running]
-    if {$running < $CI_WORKERS} {
-        # Process oldest jobs first (FIFO by mtime)
-        set files [glob -nocomplain -directory $CI_LOGS *.status]
-        set files [lsort -command {apply {{a b} {
-            expr {[file mtime $a] - [file mtime $b]}
-        }}} $files]
-        foreach f $files {
-            if {$running >= $CI_WORKERS} break
-            catch {
-                set data [read-file $f]
-                if {![regexp {"status":"queued"} $data]} continue
-                set id [file rootname [file tail $f]]
-                # Atomically claim: mark running + record started time
-                set started [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%S -gmt 1]
-                regsub {"status":"queued"} $data \
-                    "\"status\":\"running\",\"started\":\"$started\"" data
-                atomic-write $f $data
-                # setsid gives ci-run.sh its own process group (PID == PGID) for clean kill
-                exec setsid [file join $script_dir ci-run.sh] $id &
-                incr running
-            }
+    # Single pass: count running and collect queued jobs (oldest first)
+    set files [lsort -command {apply {{a b} {
+        expr {[file mtime $a] - [file mtime $b]}
+    }}} [glob -nocomplain -directory $CI_LOGS *.status]]
+
+    set running 0
+    set queued {}
+    foreach f $files {
+        catch {
+            set data [read-file $f]
+            if {[regexp {"status":"running"} $data]} { incr running }
+            if {[regexp {"status":"queued"}  $data]} { lappend queued [list $f $data] }
         }
     }
+
+    foreach item $queued {
+        if {$running >= $CI_WORKERS} break
+        lassign $item f data
+        set id [file rootname [file tail $f]]
+        # Atomically claim: mark running + record started time
+        set started [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%S -gmt 1]
+        regsub {"status":"queued"} $data \
+            "\"status\":\"running\",\"started\":\"$started\"" data
+        atomic-write $f $data
+        # setsid gives ci-run.sh its own process group (PID == PGID) for clean kill
+        exec setsid [file join $script_dir ci-run.sh] $id &
+        incr running
+    }
+
     after 500 dispatch-jobs
 }
 

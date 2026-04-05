@@ -16,7 +16,6 @@ set -euo pipefail
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
 CI_WORKTREES="${CI_WORKTREES:-$HOME/ci-worktrees}"
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$CI_LOGS"
 
@@ -77,7 +76,7 @@ BASE=$(git -C "$CI_WORKSPACE/$repo" rev-parse origin/HEAD)
 git -C "$CI_WORKSPACE/$repo" worktree add "$WORKTREE" "$BASE"
 
 # ── Run real rsync into the worktree ─────────────────────────────────────────
-args[$last]="$WORKTREE/"
+args[last]="$WORKTREE/"
 
 exec 1>&3  # restore real stdout for rsync protocol
 exec 3>&-

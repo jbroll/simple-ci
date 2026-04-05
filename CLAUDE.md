@@ -23,7 +23,7 @@ The old individual scripts (`ci-push.sh`, `ci-wait.sh`, `ci-stat.sh`, `ci-kill.s
 - **`-server` not `-local`**: Wapp's `-local` tries to open a browser. Always use `-server <addr>:<port>`.
 - **`set -e` + exit codes**: `cmd || VAR=$?` to capture exit code under `set -e`; a bare command followed by `$?` on the next line will never see a non-zero value.
 - **`IFS` and empty fields**: `IFS=$'\t'` collapses consecutive tabs (tab is IFS whitespace). Use a non-whitespace delimiter (e.g. `|`) with `join("|")` in jq when fields may be empty.
-- **setsid + process group kill**: `ci-run.sh` is spawned with `setsid` so PID == PGID. The kill endpoint reads the PID from the lock file and sends `kill -TERM -- -$pid` to kill the entire group (including npm child processes).
+- **setsid + process group kill**: `ci-run.sh` is spawned with `setsid` so PID == PGID. The kill endpoint reads the PID from the lock file and sends `kill -TERM -- -$pid` to kill the entire group.
 - **Zombie detection timing**: The `maintenance` proc runs every 10s independently of dispatch. This gives `ci-run.sh` enough time to acquire its flock before the stale-job check runs.
 - **Atomic status writes**: Always use `atomic-write` (tmp + mv) in Tcl and the `jq > tmp && mv` pattern in bash to avoid partial reads.
 
@@ -37,10 +37,31 @@ ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
 
 Logs via svlogd: `/var/log/ci-server/`.
 
+## Smoke Testing simple-ci
+
+`ci/` contains scripts pushable via `sci push simple-ci/SCRIPT`:
+
+- `ci/smoke` — HTTP API smoke tests (health, jobs, error validation)
+- `ci/lint`  — shellcheck on ci-run.sh, ci-rsync.sh, sci
+
+Requires `simple-ci` in gpu's ci-workspace:
+```bash
+ssh gpu 'git clone ~/src/simple-ci ~/ci-workspace/simple-ci'
+```
+
+Then run smoke tests after any deployment:
+```bash
+sci push simple-ci/smoke && sci wait <job-id>
+sci push simple-ci/lint  && sci wait <job-id>
+```
+
+Or run locally: `CI_SERVER_URL=http://gpu:8080 ./ci/smoke`
+
 ## Target Repos on gpu
 
 | Repo | Remote | Script | Notes |
 |---|---|---|---|
+| `simple-ci` | github:jbroll/simple-ci | `smoke`, `lint` | CI self-tests |
 | `wicketmap` | github:jbroll/wicketmap | `test` | vitest unit tests (`ci/test` runs `npm run test:run`) |
 | `jscadui` | github:jbroll/jscadui | `test` | `ci/test` installs and runs `packages/openscad` test:local |
 | `jbr-jazz` | github:jbroll/jbr-jazz | dependency only | must `git pull && npm install && npm run build` after updates |

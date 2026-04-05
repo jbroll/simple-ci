@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Lint all shell scripts with shellcheck.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+shellcheck "$REPO/ci-run.sh" "$REPO/ci-rsync.sh" "$REPO/sci"
+echo "shellcheck passed"

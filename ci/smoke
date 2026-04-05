@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Smoke tests for the simple-ci HTTP API.
+# Usage: CI_SERVER_URL=http://gpu:8080 ./ci/smoke
+set -euo pipefail
+
+CI_SERVER_URL="${CI_SERVER_URL:-http://localhost:8080}"
+PASS=0; FAIL=0
+
+check() {
+    local desc="$1" pattern="$2"; shift 2
+    local out
+    out=$("$@" 2>/dev/null)
+    if printf '%s' "$out" | grep -q "$pattern"; then
+        printf 'pass: %s\n' "$desc"
+        (( PASS++ )) || true
+    else
+        printf 'FAIL: %s\n  expected: %s\n  got:      %s\n' "$desc" "$pattern" "$out"
+        (( FAIL++ )) || true
+    fi
+}
+
+check "GET /health"                    '"status":"ok"'      curl -s "$CI_SERVER_URL/health"
+check "GET /jobs returns array"        '"jobs":'            curl -s "$CI_SERVER_URL/jobs"
+check "GET /job/missing → error"       '"error"'            curl -s "$CI_SERVER_URL/job/0000000000000000"
+check "POST /job unknown repo → 400"   'repo not found'     \
+    curl -s -X POST "$CI_SERVER_URL/job" -H 'Content-Type: application/json' \
+    -d '{"repo":"_no_such_repo_","commit":"abc123def456","script":"test"}'
+check "POST /job bad commit → 400"     'invalid commit'     \
+    curl -s -X POST "$CI_SERVER_URL/job" -H 'Content-Type: application/json' \
+    -d '{"repo":"simple-ci","commit":"not-a-hash","script":"test"}'
+check "POST /job bad script → 400"     'invalid script'     \
+    curl -s -X POST "$CI_SERVER_URL/job" -H 'Content-Type: application/json' \
+    -d '{"repo":"simple-ci","commit":"abc123def456","script":"bad:script"}'
+check "DELETE /job/missing → error"    '"error"'            curl -s -X DELETE "$CI_SERVER_URL/job/0000000000000000"
+
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+(( FAIL == 0 ))

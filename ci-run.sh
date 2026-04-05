@@ -49,6 +49,7 @@ do-cleanup() {
 # WORKTREE, and LOCKFILE are guaranteed set by the time this runs.
 on-term() {
     do-cleanup
+    { echo ""; echo "=== killed | $(date -u +%Y-%m-%dT%H:%M:%S) ==="; } >> "$LOGFILE" 2>/dev/null || true
     [[ -n "${WORKTREE:-}" ]] && \
         git -C "$CI_WORKSPACE/$REPO" worktree remove --force "$WORKTREE" 2>/dev/null || true
     exec 9>&- 2>/dev/null || true
@@ -84,12 +85,12 @@ printf '%s' "$$" >&9
         exit 1
     fi
 
-    cd "$RUNDIR" && timeout "${CI_JOB_TIMEOUT:-3600}" "$RUN_SCRIPT"
+    cd "$RUNDIR" && timeout --kill-after=10 "${CI_JOB_TIMEOUT:-3600}" "$RUN_SCRIPT"
 
 ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
-# Kill any orphaned descendants in our session (npm run may have created
-# child processes in a new process group via setpgid).
+# Kill any orphaned descendants in our session that the run script
+# may have spawned in a new process group via setpgid.
 do-cleanup
 
 FINISHED="$(date -u +%Y-%m-%dT%H:%M:%S)"

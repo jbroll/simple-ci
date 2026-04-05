@@ -58,6 +58,7 @@ _ci_open_tunnel() {
 #   "host:http://url"       — direct HTTP, probe $url/health
 #   "host:tunnel:port"      — SSH tunnel to remote port, API via localhost
 resolve_ci_host() {
+    # shellcheck disable=SC2153  # CI_HOSTS is defined in the sourced conf file
     for entry in "${CI_HOSTS[@]}"; do
         local host="${entry%%:*}"
         local rest="${entry#*:}"
@@ -83,6 +84,7 @@ resolve_ci_host() {
 load_conf() {
     local loaded=0
     for f in "${CI_CONF:-}" "./ci/simple-ci.conf" "$HOME/.config/simple-ci.conf" "$SCRIPT_DIR/simple-ci.conf"; do
+        # shellcheck disable=SC1090  # conf path is intentionally dynamic
         [[ -n "$f" && -f "$f" ]] && { source "$f"; loaded=1; break; }
     done
     (( loaded )) || { echo "sci: no simple-ci.conf found" >&2; exit 1; }

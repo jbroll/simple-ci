@@ -50,7 +50,7 @@ if [[ ! "$repo" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ ! -d "$CI_WORKSPACE/$repo/.git" ]];
     exit 1
 fi
 
-if [[ ! "$script" =~ ^[a-zA-Z0-9:_-]+$ ]]; then
+if [[ ! "$script" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     echo "ci-rsync: invalid script name: $script" >&2
     exit 1
 fi
@@ -70,7 +70,7 @@ WORKTREE="$CI_WORKTREES/$repo-$ID"
 exec 3>&1
 exec 1>&2
 
-echo "ci-job: $ID  ($repo${subdir:+/$subdir} → npm run $script)"
+echo "ci-job: $ID  ($repo${subdir:+/$subdir} → ci/$script)"
 
 git -C "$CI_WORKSPACE/$repo" fetch --quiet origin
 BASE=$(git -C "$CI_WORKSPACE/$repo" rev-parse origin/HEAD)

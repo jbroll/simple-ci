@@ -22,7 +22,7 @@ SCRIPT=$(field script)
 SUBDIR=$(field subdir)
 PREBUILT=$(field worktree)   # non-empty for rsync path; worktree already created
 
-log "$REPO @ ${COMMIT:0:8} — npm run $SCRIPT${SUBDIR:+ (in $SUBDIR)}${PREBUILT:+ [prebuilt]}"
+log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${PREBUILT:+ [prebuilt]}"
 
 WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
 RUNDIR="${WORKTREE}${SUBDIR:+/$SUBDIR}"
@@ -67,7 +67,7 @@ printf '%s' "$$" >&9
     echo "=== simple-ci job $ID ==="
     echo "repo:    $REPO"
     echo "commit:  $COMMIT"
-    echo "script:  npm run $SCRIPT"
+    echo "script:  ci/$SCRIPT"
     [ -n "$SUBDIR"   ] && echo "subdir:  $SUBDIR"
     [ -n "$PREBUILT" ] && echo "source:  rsync (prebuilt worktree)"
     echo "started: $(jq -r '.started // ""' "$STATUSFILE")"
@@ -78,13 +78,13 @@ printf '%s' "$$" >&9
         git -C "$CI_WORKSPACE/$REPO" worktree add "$WORKTREE" "$COMMIT"
     fi
 
-    # Source project CI hook if present (project-specific env setup)
-    CI_HOOK="$WORKTREE/ci/setup.sh"
-    # shellcheck disable=SC1090
-    [[ -f "$CI_HOOK" ]] && source "$CI_HOOK"
+    RUN_SCRIPT="$WORKTREE/ci/$SCRIPT"
+    if [[ ! -x "$RUN_SCRIPT" ]]; then
+        echo "ci-run: $RUN_SCRIPT not found or not executable" >&2
+        exit 1
+    fi
 
-    cd "$WORKTREE" && timeout "${CI_INSTALL_TIMEOUT:-600}" npm install
-    cd "$RUNDIR"   && timeout "${CI_JOB_TIMEOUT:-3600}"   npm run "$SCRIPT"
+    cd "$RUNDIR" && timeout "${CI_JOB_TIMEOUT:-3600}" "$RUN_SCRIPT"
 
 ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 

@@ -41,8 +41,8 @@ Logs via svlogd: `/var/log/ci-server/`.
 
 | Repo | Remote | Script | Notes |
 |---|---|---|---|
-| `wicketmap` | github:jbroll/wicketmap | `test:run` | vitest unit tests |
-| `jscadui` | github:jbroll/jscadui | `test:local` in `packages/openscad` | triggered via `npm test` in that package |
+| `wicketmap` | github:jbroll/wicketmap | `test` | vitest unit tests (`ci/test` runs `npm run test:run`) |
+| `jscadui` | github:jbroll/jscadui | `test` | `ci/test` installs and runs `packages/openscad` test:local |
 | `jbr-jazz` | github:jbroll/jbr-jazz | dependency only | must `git pull && npm install && npm run build` after updates |
 | `nmea-widgets` | github:jbroll/nmea-widgets | dependency only | same |
 | `jazz-mock` | github:jbroll/jazz-mock | dependency only | same |

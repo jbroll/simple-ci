@@ -134,7 +134,7 @@ wapp-route POST /job {
         json-err "400 Bad Request" "invalid commit hash (lowercase hex, 6-40 chars)"
         return
     }
-    if {![regexp {^[a-zA-Z0-9:_-]+$} $script]} {
+    if {![regexp {^[a-zA-Z0-9_-]+$} $script]} {
         json-err "400 Bad Request" "invalid script name"
         return
     }
@@ -256,13 +256,13 @@ proc wapp-default {} {
     "tools": [
       {
         "name": "submit_job",
-        "description": "Submit a CI test job: fetch a commit, run an npm script, return a job id.",
+        "description": "Submit a CI job: fetch a commit, execute ci/<script> in the repo, return a job id.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "repo":   {"type": "string", "description": "Repo name (must exist in ci-workspace)"},
             "commit": {"type": "string", "description": "Full or abbreviated git commit hash"},
-            "script": {"type": "string", "description": "npm script to run, e.g. test:run"},
+            "script": {"type": "string", "description": "Script name to run as ci/<script>, e.g. test"},
             "subdir": {"type": "string", "description": "Optional subdirectory to run the script in"}
           },
           "required": ["repo", "commit", "script"]

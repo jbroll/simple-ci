@@ -201,6 +201,12 @@ cmd_stat() {
         --arg filter "$filter" --argjson count "$count" '
         .jobs
         | if $filter != "" then map(select(.status == $filter)) else . end
+        | sort_by([
+            (if .status == "running" then 0 else 1 end),
+            (if .status == "running" then -(.started + "Z" | fromdateiso8601)
+             elif .finished          then -(.finished + "Z" | fromdateiso8601)
+             else 0 end)
+          ])
         | .[0:$count]
         | .[]
         | [ .id[0:8]

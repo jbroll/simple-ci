@@ -208,7 +208,8 @@ wapp-route POST /job {
         }
         # Kill the entire process group (ci-run.sh was started with setsid, so PID == PGID)
         catch {exec kill -TERM -- -$pid}
-        regsub {"status":"running"} $data {"status":"killed"} data
+        set finished [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%S -gmt 1]
+        regsub {"status":"running"} $data "\"status\":\"killed\",\"finished\":\"$finished\"" data
         atomic-write $sf $data
         json-ok "{\"killed\":\"$id\"}"
 

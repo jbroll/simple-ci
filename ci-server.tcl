@@ -57,6 +57,9 @@ proc resolve-job-id {prefix} {
         return -code error "invalid job id: $prefix"
     }
     if {[string length $prefix] == 16} {
+        if {![file exists [file join $CI_LOGS "${prefix}.status"]]} {
+            return -code error "job not found: $prefix"
+        }
         return $prefix
     }
     set matches [glob -nocomplain -directory $CI_LOGS "${prefix}*.status"]

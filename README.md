@@ -1,6 +1,6 @@
 # simple-ci
 
-A minimal distributed CI system. Jobs are submitted from a developer machine and executed in isolation on a build host. The system is intentionally small: ~200 lines of Tcl for the HTTP server, ~60 lines of bash for the per-job runner, ~160 lines of bash for the client CLI.
+A minimal distributed CI system. Jobs are submitted from a developer machine and executed in isolation on a build host. The system is intentionally small: ~200 lines of Tcl for the HTTP server, ~110 lines of bash for the per-job runner, ~160 lines of bash for the client CLI.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ sci push ────rsync──────────────────
                                             ▼
                                        ci-run.sh  (per-job, up to CI_WORKERS)
                                             │ acquires flock, writes PID
-                                            │ npm install + npm run <script>
+                                            │ executes ci/<script>
                                             │ writes log + final status
                                             ▼
                                        ~/ci-logs/<id>.{log,status,lock}
@@ -37,35 +37,78 @@ Jobs move through states: `queued` → `running` → `pass` | `fail` | `killed`.
 
 **rsync path** (`sci push` + `ci-rsync.sh`): The developer's working tree is rsynced directly into a fresh git worktree on the build host. Useful for testing uncommitted changes or gitignored files (e.g. generated test data). This is the primary path.
 
-**HTTP path** (`POST /job`): Submit a repo name, commit hash, and npm script. The server fetches the commit from the upstream remote and creates a worktree from it. Useful for post-merge validation or triggering from other scripts.
+**HTTP path** (`POST /job`): Submit a repo name, commit hash, and script name. The server fetches the commit from the upstream remote and creates a worktree from it. Useful for post-merge validation or triggering from other scripts.
 
 ### Job dispatch
 
-`ci-server.tcl` runs a `dispatch-jobs` loop every 500ms. When a queued status file is found and `CI_WORKERS` slots are available, the server atomically claims the job (rewrites status `queued→running` + adds `started` timestamp) then spawns `setsid ci-run.sh <id> &`. The single-threaded Tcl event loop makes the claim step race-free.
+`ci-server.tcl` runs a `dispatch-jobs` loop every 500ms. A single pass over all status files counts running jobs and collects queued ones. When a queued job is found and a `CI_WORKERS` slot is available, the server atomically claims it (rewrites status `queued→running` + adds `started` timestamp) then spawns `setsid ci-run.sh <id> &`. The single-threaded Tcl event loop makes the claim step race-free.
 
 ### Concurrency
 
-Up to `CI_WORKERS` (default 3) `ci-run.sh` processes run concurrently. Each is its own process group leader (via `setsid`), which allows clean process-group kill when a job is cancelled.
+Up to `CI_WORKERS` (default 3) `ci-run.sh` processes run concurrently. Each is its own session leader (via `setsid`), with PID == PGID == SID, which allows clean session-wide kill when a job is cancelled.
 
 ### Job isolation
 
-Each job runs in a dedicated git worktree under `~/ci-worktrees/<repo>-<id>/`. The worktree is removed after the job completes. The worker runs `npm install` at the worktree root before `npm run <script>`, so each job gets a clean dependency tree.
+Each job runs in a dedicated git worktree under `~/ci-worktrees/<repo>-<id>/`. The worktree is removed after the job completes (or on kill). The runner executes `ci/<script>` from the repo's worktree — each repo owns its own setup, dependency installation, and test invocation inside that script.
+
+## CI script convention
+
+Each repo under test must have executable scripts in a `ci/` directory. The script name is the `SCRIPT` argument to `sci push`:
+
+```
+repo/
+  ci/
+    test       ← invoked by: sci push repo/test
+    smoke      ← invoked by: sci push repo/smoke
+```
+
+A typical `ci/test`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+npm install
+npm run test:run
+```
+
+The runner `cd`s to the worktree root (or optional `SUBDIR`) before invoking the script. Script names must match `^[a-zA-Z0-9_-]+$` — no slashes or colons.
+
+For repos with file: dependencies on siblings, or that need environment variables, set those up inside the script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+WORKTREE="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Load secrets
+. "$HOME/.config/myrepo/secrets.env"
+
+# Symlink sibling dep if needed
+ln -sfn "$HOME/ci-workspace/some-dep" "$(dirname "$WORKTREE")/some-dep"
+
+npm install
+npm run test:run
+```
 
 ## Dependencies
 
-- [`wapp`](https://sqlite.org/wapp.html) — Tcl web framework, vendored as `wapp.tcl` and `wapp-routes.tcl` in this repo (no sibling directory required)
+- [`wapp`](https://sqlite.org/wapp.html) — Tcl web framework, vendored as `wapp.tcl` and `wapp-routes.tcl` in this repo
 
 ## Files
 
 | File | Role |
 |---|---|
 | `ci-server.tcl` | Wapp HTTP server; dispatches jobs, serves status and logs |
-| `ci-run.sh` | Per-job runner spawned by the server; acquires flock, runs npm, writes final status |
+| `ci-run.sh` | Per-job runner spawned by the server; acquires flock, executes `ci/<script>`, writes final status |
 | `ci-rsync.sh` | Rsync server-side wrapper; creates worktree, writes queued status file, prints job ID |
 | `sci` | Client CLI: `push`, `wait`, `stat`, `kill`, `clean` subcommands |
-| `ci-setup.sh` | One-time build-host initialisation |
+| `ci-setup.sh` | One-time build-host initialisation (directories, symlinks) |
 | `wapp.tcl`, `wapp-routes.tcl` | Vendored Tcl web framework |
-| `simple-ci.conf` | Default configuration (override per-project or via `~/.config/simple-ci.conf`) |
+| `simple-ci.conf` | Default configuration template |
+| `ci/smoke` | HTTP API smoke tests; run after deployments |
+| `ci/lint` | shellcheck for all shell scripts |
 
 ## Setup
 
@@ -75,32 +118,27 @@ Each job runs in a dedicated git worktree under `~/ci-worktrees/<repo>-<id>/`. T
 # Clone this repo
 git clone git@github.com:jbroll/simple-ci.git ~/src/simple-ci
 
-# Initialise directories and symlinks
+# Initialise directories
 ~/src/simple-ci/ci-setup.sh
 
 # Clone repos to test into ci-workspace
 git clone git@github.com:you/myrepo.git ~/ci-workspace/myrepo
 
-# Install and build peer dependencies for repos with file: links (once).
-# These must be pre-built because their package.json exports point to dist/:
+# For repos with file: sibling dependencies, pre-build them once:
 # cd ~/ci-workspace/some-dep && npm install && npm run build
 
-# Start services (see Deployment section for persistent setup)
-~/src/simple-ci/ci-worker.sh &
-~/src/simple-ci/ci-server.tcl -server 127.0.0.1:8080
+# Start the server (see Deployment for persistent runit setup)
+~/src/simple-ci/ci-server.tcl -server 0.0.0.0:8080
 ```
 
 ### Developer machine
 
 ```bash
-# Clone simple-ci (or use via PATH)
 git clone git@github.com:jbroll/simple-ci.git ~/src/simple-ci
-
-# Add sci to PATH
 ln -s ~/src/simple-ci/sci ~/bin/sci
 
-# Create or copy simple-ci.conf for your project (see Configuration)
-cp ~/src/simple-ci/simple-ci.conf ./simple-ci.conf
+# Copy or create a project config (see Configuration)
+cp ~/src/simple-ci/simple-ci.conf ./ci/simple-ci.conf
 ```
 
 ## Configuration
@@ -108,7 +146,7 @@ cp ~/src/simple-ci/simple-ci.conf ./simple-ci.conf
 Configuration is sourced as shell variables in order; first file found wins:
 
 1. `$CI_CONF` (explicit override)
-2. `./simple-ci.conf` (project-local, in the directory where `sci` is run)
+2. `./ci/simple-ci.conf` (project-local)
 3. `~/.config/simple-ci.conf` (user default)
 4. `<script-dir>/simple-ci.conf` (repo default)
 
@@ -119,29 +157,26 @@ Configuration is sourced as shell variables in order; first file found wins:
 | `CI_HOST` | `sci push` | SSH hostname of the build host |
 | `CI_REMOTE_SCRIPT` | `sci push` | Path to `ci-rsync.sh` on the build host |
 | `CI_SERVER_URL` | `sci` (all except push) | Base URL of `ci-server.tcl`, e.g. `http://gpu:8080` |
-| `CI_RSYNC_ARGS` | `sci push` | Extra rsync flags prepended before `--filter=':- .gitignore'`; use for `--include` rules to sync gitignored files |
-| `CI_WORKERS` | worker | Max concurrent jobs (default: 3) |
+| `CI_RSYNC_ARGS` | `sci push` | Extra rsync flags; use for `--include` rules to sync gitignored files |
+| `CI_WORKERS` | server | Max concurrent jobs (default: 3) |
 | `CI_ALLOWED_NETS` | server | Space-separated IP prefixes allowed to reach the server; empty means allow all |
 | `CI_WAIT_INTERVAL` | `sci wait` | Poll interval in seconds (default: 5) |
 | `CI_JOB_TTL` | server | Seconds before finished jobs are expired (default: 7200) |
+| `CI_JOB_TIMEOUT` | `ci-run.sh` | Max job runtime in seconds (default: 3600) |
 | `CI_HOSTS` | `sci` (all) | Ordered array of hosts to try; first reachable wins (see below) |
 
 ### Multi-host failover (`CI_HOSTS`)
 
-When defined, `CI_HOSTS` is an ordered array of build hosts. `sci` probes each entry in order and uses the first reachable one. Two entry formats are supported:
+When defined, `CI_HOSTS` is an ordered array of build hosts. `sci` probes each entry in order and uses the first reachable one:
 
 ```bash
 CI_HOSTS=(
-    "gpu:http://gpu:8080"              # direct HTTP — host can reach API directly
-    "home.rkroll.com:tunnel:8080"      # SSH tunnel — no direct HTTP, SSH-only access
+    "gpu:http://gpu:8080"              # direct HTTP — probe $url/health
+    "home.rkroll.com:tunnel:8080"      # SSH tunnel — auto-selects local port 18080+
 )
 ```
 
-**Direct entries** (`host:http://url`) probe `$url/health` with a 2-second timeout.
-
-**Tunnel entries** (`host:tunnel:remote_port`) open an SSH tunnel (`ssh -fNL local:localhost:remote_port host`), then probe through the tunnel. The local port is auto-selected starting at 18080. The tunnel process is cleaned up on exit via trap.
-
-`CI_HOST`, `CI_REMOTE_SCRIPT`, and `CI_SERVER_URL` should still be set as defaults for when `CI_HOSTS` is not defined or no host is reachable.
+Tunnel processes are long-lived and reused across `sci` invocations. `CI_HOST`, `CI_REMOTE_SCRIPT`, and `CI_SERVER_URL` should still be set as fallbacks for when `CI_HOSTS` is not defined or no host is reachable.
 
 **Example project config** (`./ci/simple-ci.conf`):
 
@@ -151,7 +186,6 @@ CI_HOSTS=(
     "home.rkroll.com:tunnel:8080"
 )
 
-# Defaults (used when no CI_HOSTS entry is reachable)
 CI_HOST=gpu
 CI_REMOTE_SCRIPT=~/src/simple-ci/ci-rsync.sh
 CI_SERVER_URL=http://gpu:8080
@@ -170,21 +204,18 @@ sci <command> [options]
   help   [COMMAND]                                show help
 ```
 
-### Submit a job and wait for results
+Job IDs may be given as a prefix of at least 4 hex characters, as long as they uniquely identify a job. The 8-char prefix shown by `sci stat` always works.
+
+### Submit a job and wait
 
 ```bash
-# From the project root (where simple-ci.conf lives):
-JOB=$(sci push myrepo/test:run)
+# From the project root (where ci/simple-ci.conf lives):
+JOB=$(sci push myrepo/test)
 sci wait "$JOB"
 # Log streams to stdout on completion; exits 0/1 for pass/fail
 ```
 
-For a monorepo with a subdirectory as the run target:
-
-```bash
-JOB=$(sci push myrepo/packages/mypackage/test:run)
-# Worker runs: npm install at repo root, npm run test:run in packages/mypackage/
-```
+`sci push` prints server messages to stderr and the bare job ID to stdout, so `$()` capture works cleanly.
 
 ### Watch job status
 
@@ -192,56 +223,54 @@ JOB=$(sci push myrepo/packages/mypackage/test:run)
 sci stat          # snapshot
 sci stat -w       # refresh every 5s
 sci stat -w 2     # refresh every 2s
-sci stat -s running   # filter by status
+sci stat -s running
 ```
 
 ### Kill a running job
 
 ```bash
-sci kill <JOB-ID>
+sci kill <JOB-ID>    # full or 4+ char prefix
 ```
 
-### npm integration
+### npm script integration
 
 ```json
 {
   "scripts": {
-    "test":       "npm run test:ci",
-    "test:ci":    "cd ../.. && JOB=$(../simple-ci/sci push myrepo/packages/mypkg/test:local) && ../simple-ci/sci wait \"$JOB\"",
-    "test:local": "npm run build && npm run test:unit && npm run test:comparison"
+    "test":    "npm run test:ci",
+    "test:ci": "JOB=$(sci push myrepo/test) && sci wait \"$JOB\""
   }
 }
 ```
-
-`sci push` prints server messages (worktree setup, job ID) to stderr and the bare job ID to stdout, so `$()` capture works cleanly.
 
 ### Git hook integration
 
 ```bash
 SCI="$HOME/src/simple-ci/sci"
 
-# Check server is reachable, then push and wait
 if [[ -x "$SCI" ]] && "$SCI" stat >/dev/null 2>&1; then
-    JOB=$("$SCI" push myrepo/test:run)
+    JOB=$("$SCI" push myrepo/test)
     "$SCI" wait "$JOB" || exit 1
 fi
 ```
 
-See `hooks/` in the wicketmap repo for a full commit-msg hook example with local fallback.
-
 ## HTTP API
 
-The server exposes a self-describing API schema at `GET /` in MCP tool format.
+The server exposes a self-describing schema at `GET /` in MCP tool format.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/job` | Submit a job. Body: `{"repo":"name","commit":"abc123","script":"test:run","subdir":"optional/path"}` |
+| `POST` | `/job` | Submit a job. Body: `{"repo":"name","commit":"abc123","script":"test","subdir":"optional/path"}` |
 | `GET` | `/job/:id` | Job status object |
 | `POST` | `/job/:id/kill` | Send SIGTERM to a running job; marks status `killed` |
 | `DELETE` | `/job/:id` | Remove status and log files (non-running jobs only) |
 | `GET` | `/log/:id` | Full stdout+stderr log |
 | `GET` | `/jobs` | All jobs, newest first |
-| `GET` | `/health` | `{"status":"ok"}` |
+| `GET` | `/health` | `{"status":"ok","service":"simple-ci"}` |
+
+`:id` accepts a full 16-char hex job ID or any unique prefix of at least 4 chars.
+
+**Validation:** `repo` must exist in `ci-workspace`; `commit` must be 6–40 lowercase hex chars; `script` must match `^[a-zA-Z0-9_-]+$` (no colons or slashes).
 
 **Status object fields:** `id`, `status`, `repo`, `commit`, `script`, `subdir` (if set), `started` (ISO 8601), `finished` (ISO 8601), `exit` (integer, when complete).
 
@@ -249,7 +278,7 @@ The server exposes a self-describing API schema at `GET /` in MCP tool format.
 
 ## Deployment (Void Linux / runit)
 
-Only `ci-server` needs a runit service. The server spawns `ci-run.sh` directly — there is no separate worker daemon.
+Only `ci-server` needs a runit service. The server spawns `ci-run.sh` directly.
 
 ```sh
 # /etc/sv/ci-server/run
@@ -266,21 +295,20 @@ exec chpst -u john /home/john/src/simple-ci/ci-server.tcl -server 0.0.0.0:8080 2
 
 Enable with `ln -s /etc/sv/ci-server /var/service/`. Logs via svlogd at `/var/log/ci-server/`.
 
-After pulling updates: `git -C ~/src/simple-ci pull && sudo sv restart ci-server`
+After pulling updates:
+```bash
+ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
+```
 
-`HOME` must be set explicitly — runit does not inherit it, and several tools (`npm`, `git`) require it.
+`HOME` must be set explicitly — runit does not inherit it.
 
 ## Runtime directories
 
 | Variable | Default | Contents |
 |---|---|---|
 | `CI_WORKSPACE` | `~/ci-workspace/` | Cloned repos used as worktree bases |
-| `CI_WORKTREES` | `~/ci-worktrees/` | Per-job worktrees (deleted after run) + permanent symlinks for `file:` deps |
-| `CI_LOGS` | `~/ci-logs/` | `<id>.status`, `<id>.log`, and `<id>.lock` (held while running) per job |
-
-### Sibling `file:` dependencies
-
-If a repo under test uses `"dep": "file:../dep"` in `package.json`, npm resolves `../dep` relative to the worktree, which lands in `~/ci-worktrees/`. Run `ci-setup.sh` to create permanent symlinks from `ci-worktrees/<dep>` → `ci-workspace/<dep>` so these resolve correctly without per-job setup.
+| `CI_WORKTREES` | `~/ci-worktrees/` | Per-job worktrees (deleted after run) |
+| `CI_LOGS` | `~/ci-logs/` | `<id>.status`, `<id>.log`, `<id>.lock` per job |
 
 ## Log rotation
 

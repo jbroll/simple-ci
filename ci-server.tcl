@@ -134,16 +134,16 @@ wapp-route POST /job {
             json-err "400 Bad Request" "body must contain repo, commit, and script"
             return
         }
-        if {![valid-repo $repo]} {
-            json-err "400 Bad Request" "repo not found in ci-workspace: $repo"
-            return
-        }
         if {![regexp {^[0-9a-f]{6,40}$} $commit]} {
             json-err "400 Bad Request" "invalid commit hash (lowercase hex, 6-40 chars)"
             return
         }
         if {![regexp {^[a-zA-Z0-9_-]+$} $script]} {
             json-err "400 Bad Request" "invalid script name"
+            return
+        }
+        if {![valid-repo $repo]} {
+            json-err "400 Bad Request" "repo not found in ci-workspace: $repo"
             return
         }
 

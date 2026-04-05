@@ -59,6 +59,19 @@ printf '%s' "$$" >&9
 
 ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
+# Kill any orphaned descendants (e.g. node workers spawned by npm run).
+# ci-run.sh was started via `setsid` so $$ is the session/group leader.
+# Ignore SIGTERM so this shell survives the group kill, then SIGKILL
+# only the remaining children (SIGKILL can't be trapped, so exclude self).
+trap '' TERM
+kill -TERM -- -$$ 2>/dev/null || true
+sleep 1
+# SIGKILL stragglers — must exclude self since SIGKILL is not trappable
+for pid in $(pgrep -g $$ 2>/dev/null); do
+    [ "$pid" != "$$" ] && kill -KILL "$pid" 2>/dev/null || true
+done
+trap - TERM
+
 FINISHED="$(date -u +%Y-%m-%dT%H:%M:%S)"
 { echo ""; echo "=== exit $EXIT_CODE | $FINISHED ==="; } >> "$LOGFILE"
 

@@ -35,9 +35,13 @@ _ci_open_tunnel() {
 
     ssh -fNL "${local_port}:localhost:${remote_port}" "$host" 2>/dev/null || return 1
 
-    # Verify the tunnel is up
-    sleep 0.5
-    if ! curl -sf --max-time 3 "http://localhost:${local_port}/health" >/dev/null 2>&1; then
+    # Verify the tunnel is up — retry a few times in case it's slow to connect
+    local attempts=0
+    until curl -sf --max-time 2 "http://localhost:${local_port}/health" >/dev/null 2>&1; do
+        (( ++attempts >= 6 )) && break
+        sleep 0.5
+    done
+    if (( attempts >= 6 )); then
         # Kill the tunnel we just opened (it's broken)
         local pid
         pid=$(ss -tlnp "sport = :$local_port" 2>/dev/null \

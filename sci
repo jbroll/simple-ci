@@ -371,12 +371,19 @@ cmd_clean() {
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 
+cmd_host() {
+    load_conf
+    : "${CI_HOST:?no CI host reachable}"
+    echo "$CI_HOST"
+}
+
 case "$cmd" in
     stat)             cmd_stat  "$@" ;;
     push)             cmd_push  "$@" ;;
     wait)             cmd_wait  "$@" ;;
     kill)             cmd_kill  "$@" ;;
     clean)            cmd_clean "$@" ;;
+    host)             cmd_host  "$@" ;;
     help|-h|--help)   cmd_help  "$@" ;;
     *)
         echo "sci: unknown command: $cmd  (try 'sci help')" >&2

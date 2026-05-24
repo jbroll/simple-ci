@@ -226,7 +226,7 @@ wapp-route GET /job/id {
     json-ok [read-file [status-file $id]]
 }
 
-# DELETE /job/:id — remove a job's status and log files
+# DELETE /job/:id — remove a job's status, log files, and worktree
 wapp-route DELETE /job/id {
     if {[catch {resolve-job-id $id} id]} {
         json-err "404 Not Found" $id; return
@@ -236,6 +236,13 @@ wapp-route DELETE /job/id {
     if {[regexp {"status":"running"} $data]} {
         json-err "409 Conflict" "cannot delete a running job"
         return
+    }
+    # Remove the worktree if recorded; both rsync and git-path jobs write this field
+    if {[regexp {"worktree":"([^"]+)"} $data -> worktree] && [file isdirectory $worktree]} {
+        if {[regexp {"repo":"([^"]+)"} $data -> repo]} {
+            catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $worktree}
+        }
+        catch {file delete -force $worktree}
     }
     file delete -force $sf
     file delete -force [log-file $id]

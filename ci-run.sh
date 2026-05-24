@@ -77,6 +77,9 @@ printf '%s' "$$" >&9
     if [[ -z "$PREBUILT" ]]; then
         git -C "$CI_WORKSPACE/$REPO" fetch --quiet origin
         git -C "$CI_WORKSPACE/$REPO" worktree add "$WORKTREE" "$COMMIT"
+        # Record worktree path so DELETE /job/:id can clean it up via sci clean
+        jq -c --arg w "$WORKTREE" '. + {"worktree":$w}' \
+            "$STATUSFILE" > "$STATUSFILE.tmp.$$" && mv "$STATUSFILE.tmp.$$" "$STATUSFILE"
     fi
 
     RUN_SCRIPT="$WORKTREE/ci/$SCRIPT"
@@ -101,8 +104,6 @@ jq -c --arg s "$STATUS" --argjson e "$EXIT_CODE" --arg f "$FINISHED" \
     '. + {"status":$s,"exit":$e,"finished":$f}' \
     "$STATUSFILE" > "$STATUSFILE.tmp.$$"
 mv "$STATUSFILE.tmp.$$" "$STATUSFILE"
-
-git -C "$CI_WORKSPACE/$REPO" worktree remove --force "$WORKTREE" 2>/dev/null || true
 
 exec 9>&-
 rm -f "$LOCKFILE"

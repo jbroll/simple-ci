@@ -237,13 +237,7 @@ wapp-route DELETE /job/id {
         json-err "409 Conflict" "cannot delete a running job"
         return
     }
-    # Remove the worktree if recorded; both rsync and git-path jobs write this field
-    if {[regexp {"worktree":"([^"]+)"} $data -> worktree] && [file isdirectory $worktree]} {
-        if {[regexp {"repo":"([^"]+)"} $data -> repo]} {
-            catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $worktree}
-        }
-        catch {file delete -force $worktree}
-    }
+    remove-job-worktree $data
     file delete -force $sf
     file delete -force [log-file $id]
     file delete -force [lock-file $id]
@@ -404,6 +398,16 @@ proc job-lock-held {id} {
     return [catch {exec flock -n $lf true}]
 }
 
+proc remove-job-worktree {data} {
+    global CI_WORKSPACE
+    if {![regexp {"worktree":"([^"]+)"} $data -> worktree]} return
+    if {![file isdirectory $worktree]} return
+    if {[regexp {"repo":"([^"]+)"} $data -> repo]} {
+        catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $worktree}
+    }
+    catch {file delete -force $worktree}
+}
+
 proc expire-old-jobs {} {
     global CI_LOGS CI_JOB_TTL
     if {$CI_JOB_TTL <= 0} return
@@ -414,6 +418,7 @@ proc expire-old-jobs {} {
             set id [file rootname [file tail $f]]
             if {[regexp {"status":"running"} $data]} {
                 if {![job-lock-held $id]} {
+                    remove-job-worktree $data
                     regsub {"status":"running"} $data {"status":"stale"} data
                     atomic-write $f $data
                     file delete -force [lock-file $id]
@@ -426,6 +431,7 @@ proc expire-old-jobs {} {
             } else {
                 if {[parse-iso-time $ts] >= $cutoff} continue
             }
+            remove-job-worktree $data
             file delete -force $f
             file delete -force [log-file $id]
             file delete -force [lock-file $id]

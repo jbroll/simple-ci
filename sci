@@ -198,11 +198,16 @@ cmd_stat() {
     local json
     json=$("${CURL[@]}" "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
 
-    printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "ID" "STATUS" "TIME" "REPO" "COMMIT" "SCRIPT"
-    printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "--------" "-------" "--------" "--------------------" "--------" "------"
+    printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %s\n' "ID" "STATUS" "DURATION" "FINISHED" "REPO" "COMMIT" "SCRIPT"
+    printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %s\n' "--------" "-------" "--------" "--------" "--------------------" "--------" "------"
 
     printf '%s' "$json" | jq -r \
         --arg filter "$filter" --argjson count "$count" '
+        def fmt_dur(secs):
+            if secs < 60 then "\(secs)s"
+            elif secs < 3600 then "\(secs / 60 | floor)m\(secs % 60 | tostring | if length == 1 then "0" + . else . end)s"
+            else "\(secs / 3600 | floor)h\(secs % 3600 / 60 | floor | tostring | if length == 1 then "0" + . else . end)m"
+            end;
         .jobs
         | if $filter != "" then map(select(.status == $filter)) else . end
         | sort_by([
@@ -216,19 +221,17 @@ cmd_stat() {
         | [ .id[0:8]
           , .status
           , (if .status == "running" and .started then
-               (now - (.started + "Z" | fromdateiso8601)) | floor
-               | if . < 60 then "\(.)s"
-                 elif . < 3600 then "\(. / 60 | floor)m\(. % 60 | tostring | if length == 1 then "0" + . else . end)s"
-                 else "\(. / 3600 | floor)h\(. % 3600 / 60 | floor | tostring | if length == 1 then "0" + . else . end)m"
-                 end
-             elif .finished then (.finished + "Z" | fromdateiso8601 | strflocaltime("%H:%M:%S"))
+               fmt_dur((now - (.started + "Z" | fromdateiso8601)) | floor)
+             elif .started and .finished then
+               fmt_dur(((.finished + "Z" | fromdateiso8601) - (.started + "Z" | fromdateiso8601)) | floor)
              else "" end)
+          , (if .finished then (.finished + "Z" | fromdateiso8601 | strflocaltime("%H:%M:%S")) else "" end)
           , .repo
           , .commit[0:8]
           , (if .subdir then .subdir + "/" else "" end) + .script
           ] | join("|")' \
-    | while IFS='|' read -r id status ts repo commit label; do
-        printf '%-8s  %-7s  %-8s  %-20s  %-8s  %s\n' "$id" "$status" "$ts" "$repo" "$commit" "$label"
+    | while IFS='|' read -r id status duration finished repo commit label; do
+        printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %s\n' "$id" "$status" "$duration" "$finished" "$repo" "$commit" "$label"
     done
 }
 

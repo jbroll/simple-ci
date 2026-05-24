@@ -418,6 +418,14 @@ proc expire-old-jobs {} {
             set id [file rootname [file tail $f]]
             if {[regexp {"status":"running"} $data]} {
                 if {![job-lock-held $id]} {
+                    set lf [lock-file $id]
+                    if {[file exists $lf]} {
+                        set pid [string trim [read-file $lf]]
+                        if {[regexp {^\d+$} $pid]} {
+                            catch {exec pkill -TERM -s $pid}
+                            catch {exec pkill -KILL -s $pid}
+                        }
+                    }
                     remove-job-worktree $data
                     regsub {"status":"running"} $data {"status":"stale"} data
                     atomic-write $f $data

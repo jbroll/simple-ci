@@ -221,7 +221,7 @@ cmd_stat() {
                  elif . < 3600 then "\(. / 60 | floor)m\(. % 60 | tostring | if length == 1 then "0" + . else . end)s"
                  else "\(. / 3600 | floor)h\(. % 3600 / 60 | floor | tostring | if length == 1 then "0" + . else . end)m"
                  end
-             elif .finished then (.finished | split("T")[1] | rtrimstr("Z"))
+             elif .finished then (.finished + "Z" | fromdateiso8601 | strflocaltime("%H:%M:%S"))
              else "" end)
           , .repo
           , .commit[0:8]

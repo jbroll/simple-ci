@@ -413,7 +413,7 @@ proc expire-old-jobs {} {
     if {$CI_JOB_TTL <= 0} return
     set cutoff [expr {[clock seconds] - $CI_JOB_TTL}]
     foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
-        catch {
+        if {[catch {
             set data [read-file $f]
             set id [file rootname [file tail $f]]
             if {[regexp {"status":"running"} $data]} {
@@ -435,6 +435,8 @@ proc expire-old-jobs {} {
             file delete -force $f
             file delete -force [log-file $id]
             file delete -force [lock-file $id]
+        } err]} {
+            puts stderr "expire-old-jobs: [file tail $f]: $err"
         }
     }
 }

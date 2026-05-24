@@ -49,7 +49,7 @@ Up to `CI_WORKERS` (default 3) `ci-run.sh` processes run concurrently. Each is i
 
 ### Job isolation
 
-Each job runs in a dedicated git worktree under `~/ci-worktrees/<repo>-<id>/`. The worktree is removed after the job completes (or on kill). The runner executes `ci/<script>` from the repo's worktree — each repo owns its own setup, dependency installation, and test invocation inside that script.
+Each job runs in a dedicated git worktree under `~/ci-worktrees/<repo>-<id>/`. The worktree is kept after the job completes so artifacts can be retrieved, and is removed when the job is deleted via `sci clean` (or immediately on kill). The runner executes `ci/<script>` from the repo's worktree — each repo owns its own setup, dependency installation, and test invocation inside that script.
 
 ## CI script convention
 
@@ -307,7 +307,7 @@ ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
 | Variable | Default | Contents |
 |---|---|---|
 | `CI_WORKSPACE` | `~/ci-workspace/` | Cloned repos used as worktree bases |
-| `CI_WORKTREES` | `~/ci-worktrees/` | Per-job worktrees (deleted after run) |
+| `CI_WORKTREES` | `~/ci-worktrees/` | Per-job worktrees (deleted on `sci clean` or kill) |
 | `CI_LOGS` | `~/ci-logs/` | `<id>.status`, `<id>.log`, `<id>.lock` per job |
 
 ## Log rotation

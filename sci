@@ -205,7 +205,7 @@ cmd_stat() {
         --arg filter "$filter" --argjson count "$count" '
         def fmt_dur(secs):
             if secs < 60 then "\(secs)s"
-            elif secs < 3600 then "\(secs / 60 | floor)m\(secs % 60 | tostring | if length == 1 then "0" + . else . end)s"
+            elif secs < 3600 then "\(secs / 60 | floor | tostring | if length == 1 then " " + . else . end)m\(secs % 60 | tostring | if length == 1 then "0" + . else . end)s"
             else "\(secs / 3600 | floor)h\(secs % 3600 / 60 | floor | tostring | if length == 1 then "0" + . else . end)m"
             end;
         .jobs

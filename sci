@@ -370,6 +370,20 @@ cmd_clean() {
     echo "sci clean: done"
 }
 
+# ── path ──────────────────────────────────────────────────────────────────────
+cmd_path() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+
+    if [[ $# -ne 1 ]]; then
+        echo "Usage: sci path JOB-ID" >&2
+        echo "  Print the worktree path for a job (as recorded by the CI server)." >&2
+        exit 1
+    fi
+
+    "${CURL[@]}" "$CI_SERVER_URL/job/$1" | jq -r '.worktree // empty'
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
@@ -387,6 +401,7 @@ case "$cmd" in
     kill)             cmd_kill  "$@" ;;
     clean)            cmd_clean "$@" ;;
     host)             cmd_host  "$@" ;;
+    path)             cmd_path  "$@" ;;
     help|-h|--help)   cmd_help  "$@" ;;
     *)
         echo "sci: unknown command: $cmd  (try 'sci help')" >&2

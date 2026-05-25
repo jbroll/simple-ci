@@ -123,13 +123,10 @@ Usage: sci push REPO[/SUBDIR]/SCRIPT
 EOF
             ;;
         wait) cat <<'EOF'
-Usage: sci wait [--timeout SECS] JOB-ID
+Usage: sci wait JOB-ID
 
   Wait for a job to finish, then print its log to stdout.
-  Exits 0 on pass, 1 on fail/killed, 2 on unexpected status or timeout.
-
-  --timeout SECS    fail if the job stays queued for more than SECS seconds
-                    (default: $CI_MAX_QUEUED_SECS, or 60 if unset)
+  Exits 0 on pass, 1 on fail/killed, 2 on unexpected status.
 EOF
             ;;
         kill) cat <<'EOF'
@@ -264,21 +261,11 @@ cmd_wait() {
     load_conf
     : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
 
-    local max_queued="${CI_MAX_QUEUED_SECS:-60}"
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --timeout) shift; max_queued="$1" ;;
-            --) shift; break ;;
-            -*) cmd_help wait >&2; exit 1 ;;
-            *) break ;;
-        esac
-        shift
-    done
-
     if [[ $# -ne 1 ]]; then cmd_help wait >&2; exit 1; fi
 
     local id="$1" interval="${CI_WAIT_INTERVAL:-5}"
     local queued_since=0
+    local max_queued="${CI_MAX_QUEUED_SECS:-3600}"
 
     printf 'sci: waiting for job %s' "$id" >&2
 

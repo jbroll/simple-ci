@@ -123,10 +123,13 @@ Usage: sci push REPO[/SUBDIR]/SCRIPT
 EOF
             ;;
         wait) cat <<'EOF'
-Usage: sci wait JOB-ID
+Usage: sci wait [--timeout SECS] JOB-ID
 
   Wait for a job to finish, then print its log to stdout.
-  Exits 0 on pass, 1 on fail/killed, 2 on unexpected status.
+  Exits 0 on pass, 1 on fail/killed, 2 on unexpected status or timeout.
+
+  --timeout SECS    fail if the job stays queued for more than SECS seconds
+                    (default: $CI_MAX_QUEUED_SECS, or 60 if unset)
 EOF
             ;;
         kill) cat <<'EOF'
@@ -261,9 +264,21 @@ cmd_wait() {
     load_conf
     : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
 
+    local max_queued="${CI_MAX_QUEUED_SECS:-60}"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --timeout) shift; max_queued="$1" ;;
+            --) shift; break ;;
+            -*) cmd_help wait >&2; exit 1 ;;
+            *) break ;;
+        esac
+        shift
+    done
+
     if [[ $# -ne 1 ]]; then cmd_help wait >&2; exit 1; fi
 
     local id="$1" interval="${CI_WAIT_INTERVAL:-5}"
+    local queued_since=0
 
     printf 'sci: waiting for job %s' "$id" >&2
 
@@ -276,7 +291,18 @@ cmd_wait() {
         }
         state=$(printf '%s' "$resp" | jq -r '.status')
         case "$state" in
-            queued|running)
+            queued)
+                queued_since=$(( queued_since + interval ))
+                if (( queued_since >= max_queued )); then
+                    printf '\nsci: job %s still queued after %ds — no worker? bad worktree name?\n' \
+                        "$id" "$queued_since" >&2
+                    exit 2
+                fi
+                printf '.' >&2
+                sleep "$interval"
+                ;;
+            running)
+                queued_since=0
                 printf '.' >&2
                 sleep "$interval"
                 ;;

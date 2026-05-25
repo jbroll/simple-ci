@@ -2,10 +2,13 @@
 # Run once on the build host (gpu) to initialise the workspace.
 set -euo pipefail
 
+# shellcheck source=/dev/null
+[ -f "${HOME}/.config/simple-ci/env.sh" ] && . "${HOME}/.config/simple-ci/env.sh"
+
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
 CI_WORKTREES="${CI_WORKTREES:-$HOME/ci-worktrees}"
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
-export LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
+LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
 
 mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES" "$CI_LOGS" "$LINDA_DIR"
 echo "Directories ready."

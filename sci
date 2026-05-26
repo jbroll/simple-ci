@@ -118,6 +118,11 @@ Usage: sci push REPO[/SUBDIR]/SCRIPT
   Rsync the current directory to the CI server and queue a job.
   Prints the job ID to stdout.
 
+  Refuses if another job from the same client session (worktree-path +
+  script-arg) is still queued or running, to prevent duplicate work from
+  concurrent invocations (e.g. parallel git-commit attempts).
+  Session state: ~/.cache/sci/sessions/<sha>.job
+
   Optional env:
     CI_RSYNC_ARGS   extra rsync args (e.g. --include rules)
 EOF
@@ -235,6 +240,23 @@ cmd_stat() {
     done
 }
 
+# ── Session tracking ─────────────────────────────────────────────────────────
+# Refuse to push if another job from the same client session is still queued
+# or running. A "session" is identified by sha256(worktree-path|script-arg) so
+# the same worktree pushing the same script twice gets blocked, but distinct
+# scripts (e.g. ci/test + ci/e2e-smoke) from the same worktree run in parallel,
+# and different worktrees pushing the same script also run in parallel.
+# State is tracked locally per-client at ~/.cache/sci/sessions/<sha>.job.
+_session_dir() {
+    printf '%s/sci/sessions' "${XDG_CACHE_HOME:-$HOME/.cache}"
+}
+
+_session_sha() {
+    local script="$1" worktree
+    worktree=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    printf '%s|%s' "$worktree" "$script" | sha256sum | cut -c1-12
+}
+
 # ── push ──────────────────────────────────────────────────────────────────────
 cmd_push() {
     load_conf
@@ -243,6 +265,42 @@ cmd_push() {
 
     if [[ $# -ne 1 ]]; then cmd_help push >&2; exit 1; fi
 
+    local script_arg="$1"
+    local session_dir sha session_file lock_file
+    session_dir=$(_session_dir)
+    sha=$(_session_sha "$script_arg")
+    session_file="$session_dir/$sha.job"
+    lock_file="$session_dir/$sha.lock"
+
+    mkdir -p "$session_dir"
+
+    # Non-blocking flock serializes the check-and-write below — prevents two
+    # concurrent pushes from this session both seeing "no active job" and
+    # racing to queue duplicates.
+    exec 9>"$lock_file"
+    if ! flock -n 9; then
+        echo "sci: another push from this session is in progress" >&2
+        exit 1
+    fi
+
+    # If the previous job for this session is still queued or running, refuse.
+    # Terminal states (pass/fail/killed) are fine — we just overwrite.
+    if [[ -f "$session_file" ]]; then
+        local existing existing_state
+        existing=$(cat "$session_file" 2>/dev/null || true)
+        if [[ -n "$existing" && -n "${CI_SERVER_URL:-}" ]]; then
+            existing_state=$("${CURL[@]}" "$CI_SERVER_URL/job/$existing" 2>/dev/null \
+                | jq -r '.status // empty' 2>/dev/null || true)
+            case "$existing_state" in
+                queued|running)
+                    echo "sci: another job from this session is $existing_state: $existing" >&2
+                    echo "sci: wait for it ('sci wait $existing') or kill it ('sci kill $existing')" >&2
+                    exit 1
+                    ;;
+            esac
+        fi
+    fi
+
     local tmp
     tmp=$(mktemp)
     trap 'rm -f "${tmp:-}"' EXIT
@@ -250,10 +308,16 @@ cmd_push() {
     # shellcheck disable=SC2086
     rsync --rsync-path="$CI_REMOTE_SCRIPT" \
         -a ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
-        . "$CI_HOST:$1" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
+        . "$CI_HOST:$script_arg" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
 
     cat "$tmp" >&2
-    sed -n 's/ci-job: \([0-9a-f]*\) queued.*/\1/p' "$tmp"
+
+    local job_id
+    job_id=$(sed -n 's/ci-job: \([0-9a-f]*\) queued.*/\1/p' "$tmp")
+    if [[ -n "$job_id" ]]; then
+        printf '%s\n' "$job_id" > "$session_file"
+    fi
+    [[ -n "$job_id" ]] && printf '%s\n' "$job_id"
 }
 
 # ── wait ──────────────────────────────────────────────────────────────────────

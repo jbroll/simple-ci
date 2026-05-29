@@ -346,17 +346,24 @@ proc wapp-default {} {
 
 proc dispatch-jobs {} {
     global CI_LOGS CI_WORKERS script_dir
-    # Single pass: count running and collect queued jobs (oldest first)
+    # Single pass: count running and collect queued jobs (oldest first).
+    # Also collect slots claimed by running jobs so we can hand a unique slot
+    # index to each newly-dispatched job (CI_SLOT_INDEX env var). Consumers
+    # use the slot to bind to per-job ports etc. without colliding.
     set files [lsort -command {apply {{a b} {
         expr {[file mtime $a] - [file mtime $b]}
     }}} [glob -nocomplain -directory $CI_LOGS *.status]]
 
     set running 0
+    set used_slots {}
     set queued {}
     foreach f $files {
         catch {
             set data [read-file $f]
-            if {[regexp {"status":"running"} $data]} { incr running }
+            if {[regexp {"status":"running"} $data]} {
+                incr running
+                if {[regexp {"slot":(\d+)} $data -> s]} { lappend used_slots $s }
+            }
             if {[regexp {"status":"queued"}  $data]} { lappend queued [list $f $data] }
         }
     }
@@ -365,13 +372,18 @@ proc dispatch-jobs {} {
         if {$running >= $CI_WORKERS} break
         lassign $item f data
         set id [file rootname [file tail $f]]
-        # Atomically claim: mark running + record started time
+        # Pick the lowest free slot index. Bounded by CI_WORKERS — there is
+        # always a free slot when running < CI_WORKERS.
+        set slot 0
+        while {[lsearch -exact $used_slots $slot] >= 0} { incr slot }
+        lappend used_slots $slot
+        # Atomically claim: mark running + record started time + slot index
         set started [clock format [clock seconds] -format %Y-%m-%dT%H:%M:%S -gmt 1]
         regsub {"status":"queued"} $data \
-            "\"status\":\"running\",\"started\":\"$started\"" data
+            "\"status\":\"running\",\"started\":\"$started\",\"slot\":$slot" data
         atomic-write $f $data
         # setsid gives ci-run.sh its own process group (PID == PGID) for clean kill
-        exec setsid [file join $script_dir ci-run.sh] $id &
+        exec env CI_SLOT_INDEX=$slot setsid [file join $script_dir ci-run.sh] $id &
         incr running
     }
 

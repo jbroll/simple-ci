@@ -293,9 +293,12 @@ cmd_push() {
                 | jq -r '.status // empty' 2>/dev/null || true)
             case "$existing_state" in
                 queued|running)
-                    echo "sci: another job from this session is $existing_state: $existing" >&2
-                    echo "sci: wait for it ('sci wait $existing') or kill it ('sci kill $existing')" >&2
-                    exit 1
+                    # Supersede rather than refuse: a new push from the same
+                    # session means the previous job's result is no longer
+                    # wanted. Killing + proceeding prevents a job orphaned by an
+                    # aborted commit from blocking every subsequent push.
+                    echo "sci: superseding previous session job $existing ($existing_state)" >&2
+                    "${CURL[@]}" -X POST "$CI_SERVER_URL/job/$existing/kill" >/dev/null 2>&1 || true
                     ;;
             esac
         fi
@@ -382,8 +385,15 @@ cmd_kill() {
 
     if [[ $# -ne 1 ]]; then cmd_help kill >&2; exit 1; fi
 
-    "${CURL[@]}" -X POST "$CI_SERVER_URL/job/$1/kill" \
-        | jq -r '"killed: \(.killed)"'
+    local resp
+    resp=$("${CURL[@]}" -X POST "$CI_SERVER_URL/job/$1/kill" 2>/dev/null || true)
+    if printf '%s' "$resp" | jq -e 'has("killed")' >/dev/null 2>&1; then
+        printf 'killed: %s\n' "$(printf '%s' "$resp" | jq -r '.killed')"
+    else
+        printf 'sci: kill failed: %s\n' \
+            "$(printf '%s' "$resp" | jq -r '.error // "unknown error"' 2>/dev/null || echo 'no response')" >&2
+        exit 1
+    fi
 }
 
 # ── clean ─────────────────────────────────────────────────────────────────────

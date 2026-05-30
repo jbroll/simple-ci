@@ -392,6 +392,10 @@ proc dispatch-jobs {} {
 
 # ── Zombie / expiry maintenance (runs independently of dispatch) ───────────────
 set CI_JOB_TTL [env-or CI_JOB_TTL 7200]
+# Worktrees are large; reclaim them well before the status/log history. The
+# pre-commit hook scp's lcov out of the worktree within seconds of completion,
+# so a 15-minute grace is safe. Set 0 to keep worktrees for the full CI_JOB_TTL.
+set CI_WORKTREE_TTL [env-or CI_WORKTREE_TTL 900]
 
 proc job-timestamp {data} {
     if {[regexp {"finished":"([^"]+)"} $data -> ts]} { return $ts }
@@ -421,9 +425,8 @@ proc remove-job-worktree {data} {
 }
 
 proc expire-old-jobs {} {
-    global CI_LOGS CI_JOB_TTL
+    global CI_LOGS CI_JOB_TTL CI_WORKTREE_TTL
     if {$CI_JOB_TTL <= 0} return
-    set cutoff [expr {[clock seconds] - $CI_JOB_TTL}]
     foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
         if {[catch {
             set data [read-file $f]
@@ -447,10 +450,17 @@ proc expire-old-jobs {} {
             }
             set ts [job-timestamp $data]
             if {$ts eq ""} {
-                if {[file mtime $f] >= $cutoff} continue
+                set age [expr {[clock seconds] - [file mtime $f]}]
             } else {
-                if {[parse-iso-time $ts] >= $cutoff} continue
+                set age [expr {[clock seconds] - [parse-iso-time $ts]}]
             }
+            # Reclaim the large worktree first, after a short grace; keep the
+            # status/log/lock until the full CI_JOB_TTL so `sci stat` history
+            # survives.
+            if {$CI_WORKTREE_TTL > 0 && $age >= $CI_WORKTREE_TTL} {
+                remove-job-worktree $data
+            }
+            if {$age < $CI_JOB_TTL} continue
             remove-job-worktree $data
             file delete -force $f
             file delete -force [log-file $id]
@@ -461,8 +471,21 @@ proc expire-old-jobs {} {
     }
 }
 
+# Clear stale git worktree admin entries (.git/worktrees/<name>) left behind
+# when a worktree dir was removed without `git worktree prune` — these otherwise
+# accumulate in `git worktree list` indefinitely.
+proc prune-worktrees {} {
+    global CI_WORKSPACE
+    foreach repo [glob -nocomplain -type d -directory $CI_WORKSPACE *] {
+        if {[file exists [file join $repo .git]]} {
+            catch {exec git -C $repo worktree prune}
+        }
+    }
+}
+
 proc maintenance {} {
     expire-old-jobs
+    prune-worktrees
     after 10000 maintenance
 }
 

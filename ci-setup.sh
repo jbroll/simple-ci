@@ -6,7 +6,7 @@ set -euo pipefail
 [ -f "${HOME}/.config/simple-ci/env.sh" ] && . "${HOME}/.config/simple-ci/env.sh"
 
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
-CI_WORKTREES="${CI_WORKTREES:-$HOME/ci-worktrees}"
+CI_WORKTREES="${CI_WORKTREES:-/data/john/ci-worktrees}"
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
 LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
 

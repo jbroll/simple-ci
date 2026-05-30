@@ -10,7 +10,7 @@ ID="${1:?ci-run: job ID required}"
 
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
-CI_WORKTREES="${CI_WORKTREES:-$HOME/ci-worktrees}"
+CI_WORKTREES="${CI_WORKTREES:-/data/john/ci-worktrees}"
 
 STATUSFILE="$CI_LOGS/$ID.status"
 LOGFILE="$CI_LOGS/$ID.log"

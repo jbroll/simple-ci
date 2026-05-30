@@ -74,9 +74,20 @@ exec 1>&2
 
 echo "ci-job: $ID  ($repo${subdir:+/$subdir} → ci/$script)"
 
+# Serialize fetch + worktree-add across concurrent pushers for this repo.
+# Concurrent git-fetch / worktree-add on one base repo race on refs and the
+# .git/worktrees lock. The slow rsync below is per-worktree, so it stays
+# outside this lock. flock auto-releases if the process dies.
+exec 8>"$CI_WORKSPACE/$repo.cilock"
+if ! flock -w 120 8; then
+    echo "ci-rsync: timed out acquiring base-repo lock for $repo" >&2
+    exit 1
+fi
 git -C "$CI_WORKSPACE/$repo" fetch --quiet origin
 BASE=$(git -C "$CI_WORKSPACE/$repo" rev-parse origin/HEAD)
 git -C "$CI_WORKSPACE/$repo" worktree add "$WORKTREE" "$BASE"
+flock -u 8
+exec 8>&-
 
 # ── Run real rsync into the worktree ─────────────────────────────────────────
 args[last]="$WORKTREE/"

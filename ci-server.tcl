@@ -17,6 +17,12 @@ set CI_LOGS         [file normalize [env-or CI_LOGS         [file join $::env(HO
 set CI_ALLOWED_NETS [env-or CI_ALLOWED_NETS ""]
 set CI_WORKERS      [env-or CI_WORKERS 3]
 
+# jbr Tcl modules (jbr::cron scheduling DSL) install as versioned .tm files under
+# ~/lib/tcl8/site-tcl via `make install` in the jbr.tcl repo. Register that on the
+# Tcl module path so load-schedule can `package require jbr::cron` — NOT vendored.
+# Scheduling is optional; a missing module/package just disables it (see load-schedule).
+::tcl::tm::path add [env-or JBR_TM [file join $::env(HOME) lib/tcl8/site-tcl]]
+
 file mkdir $CI_LOGS
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -489,9 +495,67 @@ proc maintenance {} {
     after 10000 maintenance
 }
 
+# ── Scheduled jobs ──────────────────────────────────────────────────────────────
+# An optional config file ($CI_SCHEDULE, default ~/.config/simple-ci/schedule.tcl)
+# is sourced at startup. It is plain Tcl using the `cron { when } { body }` DSL
+# from jbr::cron (package require'd in load-schedule, NOT vendored). The body is
+# arbitrary Tcl, normally `schedule-job <repo> <script>`. jbr::cron self-schedules
+# via the after-event loop, so a missed window (server down) just waits for the
+# next occurrence — no state file. Missing jbr or missing config disables
+# scheduling without affecting the rest of the server.
+#
+# `when` grammar (jbr/cron.tcl): "HH:MM" daily · "Day at HH:MM" weekly ·
+# "every <N><unit> at <M><unit>" interval+offset (units s m h d w t y).
+# Example schedule.tcl:  cron {03:00} { schedule-job wicketmap ci/e2e-map }
+
+# Queue a CI job from the scheduler: resolve origin/HEAD to a commit and write a
+# queued status file WITHOUT a worktree field, so ci-run.sh fetches origin and
+# `git worktree add`s the commit itself (builds from committed main, no rsync).
+proc schedule-job {repo script} {
+    global CI_WORKSPACE
+    if {![valid-repo $repo]} { puts stderr "schedule-job: unknown repo: $repo"; return }
+    set repodir [file join $CI_WORKSPACE $repo]
+    if {[catch {exec git -C $repodir fetch --quiet origin} e]} {
+        puts stderr "schedule-job: $repo fetch failed: $e"; return
+    }
+    if {[catch {exec git -C $repodir rev-parse origin/HEAD} commit]} {
+        puts stderr "schedule-job: $repo rev-parse origin/HEAD failed: $commit"; return
+    }
+    set commit [string trim $commit]
+    set scriptname [file tail $script]
+    if {![regexp {^[a-zA-Z0-9_-]+$} $scriptname]} {
+        puts stderr "schedule-job: invalid script: $script"; return
+    }
+    set id [random-id]
+    set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s","scheduled":true}} \
+                    $id [json-str $repo] [json-str $commit] [json-str $scriptname]]
+    atomic-write [status-file $id] $status
+    puts stderr "schedule-job: queued $repo/ci/$scriptname @ [string range $commit 0 7] (job $id)"
+    after 0 dispatch-jobs
+}
+
+set CI_SCHEDULE [env-or CI_SCHEDULE [file join $::env(HOME) .config/simple-ci/schedule.tcl]]
+proc load-schedule {} {
+    global CI_SCHEDULE
+    if {![file exists $CI_SCHEDULE]} {
+        puts stderr "schedule: no config at $CI_SCHEDULE (no scheduled jobs)"
+        return
+    }
+    if {[catch {package require jbr::cron} e]} {
+        puts stderr "schedule: jbr::cron unavailable ($e); scheduled jobs disabled"
+        return
+    }
+    if {[catch {source $CI_SCHEDULE} e]} {
+        puts stderr "schedule: error sourcing $CI_SCHEDULE: $e"
+        return
+    }
+    puts stderr "schedule: loaded $CI_SCHEDULE"
+}
+
 # ── Start ─────────────────────────────────────────────────────────────────────
 if {[llength $argv] == 0} { set argv [list -server 0.0.0.0:8080] }
 # Kick off dispatch and maintenance loops; after 100ms gives wapp time to start
 after 100 dispatch-jobs
 after 100 maintenance
+after 100 load-schedule
 wapp-start $argv

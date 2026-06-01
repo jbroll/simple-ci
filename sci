@@ -130,8 +130,22 @@ EOF
         wait) cat <<'EOF'
 Usage: sci wait JOB-ID
 
-  Wait for a job to finish, then print its log to stdout.
+  Wait for a job to finish, then print a SUMMARY to stdout:
+    pass  → one line (the runner's "N passed" summary).
+    fail  → noise-filtered, length-bounded extract + a `sci log` pointer.
+  Use `sci log JOB-ID` for the complete raw log.
   Exits 0 on pass, 1 on fail/killed, 2 on unexpected status.
+
+  Optional env:
+    CI_LOG_MAX_LINES   max lines of failure extract (default 200)
+    CI_LOG_NOISE_RE    extra egrep pattern of lines to drop as noise
+EOF
+            ;;
+        log) cat <<'EOF'
+Usage: sci log JOB-ID
+
+  Print the complete raw job log (unfiltered). `sci wait` summarizes; use
+  this when you need the full output.
 EOF
             ;;
         kill) cat <<'EOF'
@@ -159,7 +173,8 @@ Usage: sci <command> [options]
 Commands:
   stat   [-w [INTERVAL]] [-n COUNT] [-s STATUS]   show job status table
   push   REPO[/SUBDIR]/SCRIPT                     submit a job via rsync
-  wait   JOB-ID                                   wait for job, print log
+  wait   JOB-ID                                   wait for job, print summary (pass: 1 line; fail: filtered extract)
+  log    JOB-ID                                   print the full raw job log
   kill   JOB-ID                                   kill a running job
   clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
   help   [COMMAND]                                show help
@@ -323,6 +338,45 @@ cmd_push() {
     [[ -n "$job_id" ]] && printf '%s\n' "$job_id"
 }
 
+# ── log summarization ─────────────────────────────────────────────────────────
+# `sci wait` is consumed by humans AND by agents with finite context, so it must
+# not echo a whole multi-thousand-line test log. On pass it prints one line; on
+# fail it prints a noise-filtered, length-bounded extract and points at `sci log`
+# for the raw log. Noise = output that cannot help debug a TEST failure (dev
+# server chatter, proxy/tile errors, ANSI cursor codes, npm install). Extend the
+# default denylist via CI_LOG_NOISE_RE; cap via CI_LOG_MAX_LINES (default 200).
+# Lines that cannot help debug a TEST failure: dev-server/proxy/tile chatter,
+# browser console, npm install/audit, ANSI progress, and raw stack frames (the
+# Error message + failing-test name carry the signal; full stacks live in the
+# raw log). Extend via CI_LOG_NOISE_RE.
+_LOG_NOISE_DEFAULT='\[WebServer\]|\[vite\]|proxy error:|ECONNREFUSED|internalConnect|afterConnect|Failed to load resource|Browser console |\[globalSetup\]|\[offline-tile\]|packages are looking for funding|run .npm fund|severity vulnerabilit|npm audit|^added [0-9]+ packages|^npm warn|^> [@a-z]|\[dotenv|Download the React DevTools|^Running [0-9]+ tests|^[[:space:]]*at |^[[:space:]]*[·.]+[[:space:]]*$'
+
+# Strip ANSI escapes from stdin.
+_strip_ansi() { sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g'; }
+
+# Summarize a failing log read on stdin. $1 = job id (for the pointer).
+# Noise-filter, then keep the TAIL — test runners print the failing-test list +
+# counts at the end, which is the actionable triage. Full detail via `sci log`.
+_summarize_fail() {
+    local id="$1" max="${CI_LOG_MAX_LINES:-200}"
+    local noise="$_LOG_NOISE_DEFAULT${CI_LOG_NOISE_RE:+|$CI_LOG_NOISE_RE}"
+    local cleaned n
+    cleaned=$(_strip_ansi | grep -avE "$noise" | grep -avE '^[[:space:]]*$')
+    n=$(printf '%s\n' "$cleaned" | grep -c '' || true)
+    (( n > max )) && printf '  … %d earlier lines hidden — full log: sci log %s …\n\n' "$(( n - max ))" "$id"
+    printf '%s\n' "$cleaned" | tail -n "$max"
+    printf '\n--- full log: sci log %s ---\n' "$id"
+}
+
+# Print a one-line pass summary: the runner's final "N passed" line if present.
+_summarize_pass() {
+    local id="$1" line
+    line=$("${CURL[@]}" "$CI_SERVER_URL/log/$id" 2>/dev/null | _strip_ansi \
+           | grep -aiE '[0-9]+ (passed|passing)' | tail -1 | sed 's/^[[:space:]]*//')
+    if [[ -n "$line" ]]; then printf '✔ %s — %s\n' "$id" "$line"
+    else printf '✔ %s passed\n' "$id"; fi
+}
+
 # ── wait ──────────────────────────────────────────────────────────────────────
 cmd_wait() {
     load_conf
@@ -362,12 +416,12 @@ cmd_wait() {
                 ;;
             pass)
                 printf ' %s\n' "$state" >&2
-                "${CURL[@]}" "$CI_SERVER_URL/log/$id"
+                _summarize_pass "$id"
                 exit 0
                 ;;
             fail|killed)
                 printf ' %s\n' "$state" >&2
-                "${CURL[@]}" "$CI_SERVER_URL/log/$id"
+                "${CURL[@]}" "$CI_SERVER_URL/log/$id" | _summarize_fail "$id"
                 exit 1
                 ;;
             *)
@@ -457,6 +511,15 @@ cmd_clean() {
     echo "sci clean: done"
 }
 
+# ── log ───────────────────────────────────────────────────────────────────────
+# Full raw job log. `sci wait` summarizes; use this for the complete output.
+cmd_log() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+    if [[ $# -ne 1 ]]; then cmd_help log >&2; exit 1; fi
+    "${CURL[@]}" "$CI_SERVER_URL/log/$1"
+}
+
 # ── path ──────────────────────────────────────────────────────────────────────
 cmd_path() {
     load_conf
@@ -485,6 +548,7 @@ case "$cmd" in
     stat)             cmd_stat  "$@" ;;
     push)             cmd_push  "$@" ;;
     wait)             cmd_wait  "$@" ;;
+    log)              cmd_log   "$@" ;;
     kill)             cmd_kill  "$@" ;;
     clean)            cmd_clean "$@" ;;
     host)             cmd_host  "$@" ;;

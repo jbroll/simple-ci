@@ -103,6 +103,24 @@ if [[ $RSYNC_EXIT -ne 0 ]]; then
     exit $RSYNC_EXIT
 fi
 
+# ── Post-rsync integrity guard ────────────────────────────────────────────────
+# The worktree is `git worktree add <origin/HEAD>` + this rsync overlay. When
+# origin/HEAD is stale relative to the pushed tree, the requested entrypoint may
+# exist ONLY because the overlay delivered it. Verify it is present + executable
+# BEFORE queueing, so an incomplete/missing overlay fails LOUD here — at push
+# time, with diagnostics — instead of as a confusing "not found or not
+# executable" mid-run on a consumed job slot. ci-run.sh invokes
+# "$WORKTREE/ci/$script", so check exactly that path. Happy-path no-op.
+if [[ ! -x "$WORKTREE/ci/$script" ]]; then
+    echo "ci-rsync: ENTRYPOINT MISSING after rsync: ci/$script" >&2
+    echo "ci-rsync:   base $BASE — the rsync overlay did not deliver an executable ci/$script." >&2
+    echo "ci-rsync:   keep origin/HEAD current so the worktree base already contains it." >&2
+    echo "ci-rsync:   worktree ci/ listing:" >&2
+    ls -la "$WORKTREE/ci" >&2 2>/dev/null || echo "ci-rsync:   (no ci/ directory in worktree)" >&2
+    git -C "$CI_WORKSPACE/$repo" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    exit 1
+fi
+
 # ── Queue the job ─────────────────────────────────────────────────────────────
 SUBDIR_JSON="${subdir:+,\"subdir\":\"$subdir\"}"
 STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON},\"worktree\":\"$WORKTREE\"}"

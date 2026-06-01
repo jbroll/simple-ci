@@ -23,6 +23,7 @@ REPO=$(field repo)
 COMMIT=$(field commit)
 SCRIPT=$(field script)
 SUBDIR=$(field subdir)
+SELECTOR=$(field selector)   # optional test selector from REPO/SUBDIR/SCRIPT:SELECTOR
 PREBUILT=$(field worktree)   # non-empty for rsync path; worktree already created
 
 # Job context, exported so job scripts (ci/*) can self-identify — used e.g. by
@@ -30,8 +31,10 @@ PREBUILT=$(field worktree)   # non-empty for rsync path; worktree already create
 export CI_REPO="$REPO"
 export CI_COMMIT="$COMMIT"
 export CI_JOB_ID="$ID"
+# Optional test selector — a job script may run just the matching test(s).
+export CI_SELECTOR="$SELECTOR"
 
-log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${PREBUILT:+ [prebuilt]}"
+log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${SELECTOR:+ :$SELECTOR}${PREBUILT:+ [prebuilt]}"
 
 WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
 RUNDIR="${WORKTREE}${SUBDIR:+/$SUBDIR}"

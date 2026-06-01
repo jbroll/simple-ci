@@ -33,6 +33,17 @@ dest="${args[$last]}"
 dest="${dest#/}"
 dest="${dest%/}"
 
+# Optional test selector:  REPO/SUBDIR/SCRIPT:SELECTOR
+# Extract it on the FIRST ':' BEFORE the '/' split below — a selector may be a
+# spec path (e.g. tests/foo.spec.ts:79) whose '/' would otherwise corrupt the
+# repo/subdir/script parse. The selector is forwarded to the job script as
+# $CI_SELECTOR; everything path/validation-related uses the bare dest.
+selector=""
+if [[ "$dest" == *:* ]]; then
+    selector="${dest#*:}"
+    dest="${dest%%:*}"
+fi
+
 # Destination encodes:  REPO/SCRIPT  or  REPO/SUBDIR.../SCRIPT
 # The script is always the last path component; repo is always the first.
 # Everything in between is the subdir.
@@ -62,6 +73,15 @@ if [[ -n "$subdir" ]] && [[ ! "$subdir" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
     exit 1
 fi
 
+# Selector is passed to the script's command line / a test runner, so restrict
+# it to a shell-safe set: alphanumerics and / . _ - : (the last for file:line).
+# No spaces, globs, or shell metacharacters — keeps it injection-free and avoids
+# quoting headaches (a runner like Playwright matches it as a path substring).
+if [[ -n "$selector" ]] && [[ ! "$selector" =~ ^[a-zA-Z0-9/._:-]+$ ]]; then
+    echo "ci-rsync: selector must contain only [a-zA-Z0-9/._:-] (no spaces/globs): $selector" >&2
+    exit 1
+fi
+
 # ── Set up worktree ───────────────────────────────────────────────────────────
 ID=$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
 WORKTREE="$CI_WORKTREES/$repo-$ID"
@@ -72,7 +92,7 @@ WORKTREE="$CI_WORKTREES/$repo-$ID"
 exec 3>&1
 exec 1>&2
 
-echo "ci-job: $ID  ($repo${subdir:+/$subdir} → ci/$script)"
+echo "ci-job: $ID  ($repo${subdir:+/$subdir} → ci/$script${selector:+ :$selector})"
 
 # Serialize fetch + worktree-add across concurrent pushers for this repo.
 # Concurrent git-fetch / worktree-add on one base repo race on refs and the
@@ -123,7 +143,8 @@ fi
 
 # ── Queue the job ─────────────────────────────────────────────────────────────
 SUBDIR_JSON="${subdir:+,\"subdir\":\"$subdir\"}"
-STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON},\"worktree\":\"$WORKTREE\"}"
+SELECTOR_JSON="${selector:+,\"selector\":\"$selector\"}"
+STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON},\"worktree\":\"$WORKTREE\"}"
 printf '%s' "$STATUS" > "$CI_LOGS/$ID.status"
 
 echo "ci-job: $ID queued"

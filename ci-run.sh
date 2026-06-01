@@ -25,6 +25,12 @@ SCRIPT=$(field script)
 SUBDIR=$(field subdir)
 PREBUILT=$(field worktree)   # non-empty for rsync path; worktree already created
 
+# Job context, exported so job scripts (ci/*) can self-identify — used e.g. by
+# org-hooks flake-gate/build-e2e-map to derive ~/ci-flake/<repo>-*.json paths.
+export CI_REPO="$REPO"
+export CI_COMMIT="$COMMIT"
+export CI_JOB_ID="$ID"
+
 log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${PREBUILT:+ [prebuilt]}"
 
 WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"

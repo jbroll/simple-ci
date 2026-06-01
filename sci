@@ -354,26 +354,45 @@ _LOG_NOISE_DEFAULT='\[WebServer\]|\[vite\]|proxy error:|ECONNREFUSED|internalCon
 # Strip ANSI escapes from stdin.
 _strip_ansi() { sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g'; }
 
-# Summarize a failing log read on stdin. $1 = job id (for the pointer).
-# Noise-filter, then keep the TAIL — test runners print the failing-test list +
-# counts at the end, which is the actionable triage. Full detail via `sci log`.
+# Summarize a FAILING job log (read on stdin). $1 = job id. LEADS with an
+# explicit cause — status line + result counts + the failing tests (or first
+# errors) — then a noise-filtered, length-bounded detail tail, then a `sci log`
+# pointer. errexit/pipefail are disabled locally: grep "no match" is normal in
+# log formatting and must never abort sci (this once read a passing 0-test job
+# as a failure).
 _summarize_fail() {
+    set +e +o pipefail
     local id="$1" max="${CI_LOG_MAX_LINES:-200}"
     local noise="$_LOG_NOISE_DEFAULT${CI_LOG_NOISE_RE:+|$CI_LOG_NOISE_RE}"
-    local cleaned n
+    local cleaned counts fails errs n
     cleaned=$(_strip_ansi | grep -avE "$noise" | grep -avE '^[[:space:]]*$')
-    n=$(printf '%s\n' "$cleaned" | grep -c '' || true)
-    (( n > max )) && printf '  … %d earlier lines hidden — full log: sci log %s …\n\n' "$(( n - max ))" "$id"
+
+    echo "═══ job $id FAILED ═══"
+    counts=$(printf '%s\n' "$cleaned" | grep -aiE '[0-9]+ (failed|passed|flaky|skipped|did not run)' | tail -6)
+    [ -n "$counts" ] && printf '%s\n' "$counts" | sed 's/^[[:space:]]*/  /'
+    fails=$(printf '%s\n' "$cleaned" | grep -aE '^[[:space:]]*[0-9]+\) ')
+    if [ -n "$fails" ]; then
+        echo "  failing:"; printf '%s\n' "$fails" | head -40 | sed 's/^[[:space:]]*/    /'
+    else
+        errs=$(printf '%s\n' "$cleaned" | grep -aiE 'Error|✘|✗|✖|assert|expect|not ok|fatal' | head -10)
+        [ -n "$errs" ] && { echo "  errors:"; printf '%s\n' "$errs" | sed 's/^[[:space:]]*/    /'; }
+    fi
+
+    echo "─── filtered detail (last $max lines) ───"
+    n=$(printf '%s\n' "$cleaned" | grep -c '')
+    [ "$n" -gt "$max" ] && printf '  … %d earlier lines hidden …\n' "$(( n - max ))"
     printf '%s\n' "$cleaned" | tail -n "$max"
     printf '\n--- full log: sci log %s ---\n' "$id"
 }
 
-# Print a one-line pass summary: the runner's final "N passed" line if present.
+# One-line pass summary (the runner's "N passed" line if present). errexit/
+# pipefail off: a job that ran 0 tests has no "passed" line → grep exits 1.
 _summarize_pass() {
+    set +e +o pipefail
     local id="$1" line
     line=$("${CURL[@]}" "$CI_SERVER_URL/log/$id" 2>/dev/null | _strip_ansi \
            | grep -aiE '[0-9]+ (passed|passing)' | tail -1 | sed 's/^[[:space:]]*//')
-    if [[ -n "$line" ]]; then printf '✔ %s — %s\n' "$id" "$line"
+    if [ -n "$line" ]; then printf '✔ %s — %s\n' "$id" "$line"
     else printf '✔ %s passed\n' "$id"; fi
 }
 

@@ -40,17 +40,39 @@ WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
 RUNDIR="${WORKTREE}${SUBDIR:+/$SUBDIR}"
 EXIT_CODE=0
 
-# Kill every process in our session (not just our process group).
-# ci-run.sh is started with setsid so $$ == SID. npm run spawns the
-# script command via `sh -c` with setpgid, creating a new process group
-# that escapes a plain `kill -- -$$`.  Session-wide kill catches them all.
+# Kill the job's ENTIRE descendant process tree on exit/kill — by tree AND by
+# session. ci-run.sh runs under setsid ($$ == SID). Two escape hatches must both
+# be closed:
+#   * setpgid: `npm run` spawns the script in a new process GROUP (escapes a
+#     plain `kill -- -$$`) — but it stays in session $$, so `pkill -s $$` gets it.
+#   * setsid:  Playwright spawns its webServers DETACHED — a brand-new SESSION —
+#     so `pkill -s $$` does NOT reach them. They orphan, keep listening on the
+#     slot's ports (backend 3010+slot, vite 5440/5500+slot), and the next job
+#     scheduled on that slot dies with "port already in use".
+# Walking the PPID tree catches the detached sessions too. Snapshot the tree
+# FIRST (before signalling): killing the parents reparents the detached children
+# to init and breaks the PPID links, so a kill-then-rescan would miss them.
+_descendants() {
+    local p
+    for p in $(pgrep -P "$1" 2>/dev/null); do
+        _descendants "$p"
+        printf '%s ' "$p"
+    done
+}
 _cleanup_done=0
 do-cleanup() {
     [[ $_cleanup_done -eq 1 ]] && return
     _cleanup_done=1
     trap '' TERM
+    local -a tree
+    # shellcheck disable=SC2207  # intentional: split the PID list into an array
+    tree=( $(_descendants $$) )
+    # Graceful first — the whole descendant tree (detached sessions) plus the
+    # session group (setpgid groups) — then force-kill any survivors.
+    [[ ${#tree[@]} -gt 0 ]] && kill -TERM "${tree[@]}" 2>/dev/null || true
     pkill -s $$ -TERM 2>/dev/null || true
     sleep 1
+    [[ ${#tree[@]} -gt 0 ]] && kill -KILL "${tree[@]}" 2>/dev/null || true
     for pid in $(pgrep -s $$ 2>/dev/null); do
         [ "$pid" != "$$" ] && kill -KILL "$pid" 2>/dev/null || true
     done

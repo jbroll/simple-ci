@@ -36,7 +36,9 @@ PORT=$(( 18090 + ${CI_SLOT_INDEX:-0} ))
 while ss -tln "sport = :$PORT" 2>/dev/null | grep -q ":$PORT"; do PORT=$(( PORT + 1 )); done
 URL="http://127.0.0.1:$PORT"
 
-tclsh "$REPO/ci-server.tcl" -server "127.0.0.1:$PORT" >"$WORK/server.log" 2>&1 &
+# HOME=$WORK so the server's ci-run.sh children don't source the host's
+# ~/.config/simple-ci/env.sh, which would override our tempdir CI_* paths.
+env HOME="$WORK" tclsh "$REPO/ci-server.tcl" -server "127.0.0.1:$PORT" >"$WORK/server.log" 2>&1 &
 SRV=$!
 for _ in $(seq 1 40); do curl -sf "$URL/health" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -sf "$URL/health" >/dev/null || { echo "server failed to start:"; cat "$WORK/server.log"; exit 1; }

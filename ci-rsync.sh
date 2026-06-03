@@ -8,7 +8,7 @@
 #
 # Parses repo, optional subdir, and script from the destination path.
 # Creates a git worktree at origin/HEAD, replaces destination with it,
-# runs the real rsync, then queues the job via linda.
+# runs the real rsync, then queues the job by writing a .status file.
 # Prints the job ID to stderr (visible to the rsync client).
 
 set -euo pipefail

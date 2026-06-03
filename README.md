@@ -94,7 +94,7 @@ npm run test:run
 
 ## Dependencies
 
-- [`wapp`](https://sqlite.org/wapp.html) — Tcl web framework, vendored as `wapp.tcl` and `wapp-routes.tcl` in this repo
+- [`wapp`](https://sqlite.org/wapp.html) — Tcl web framework, included as the `wapp/` git submodule ([jbroll/wapp](https://github.com/jbroll/wapp)). Clone with `--recurse-submodules`, or run `git submodule update --init`.
 
 ## Files
 
@@ -105,7 +105,7 @@ npm run test:run
 | `ci-rsync.sh` | Rsync server-side wrapper; creates worktree, writes queued status file, prints job ID |
 | `sci` | Client CLI: `push`, `wait`, `stat`, `kill`, `clean` subcommands |
 | `ci-setup.sh` | One-time build-host initialisation (directories, symlinks) |
-| `wapp.tcl`, `wapp-routes.tcl` | Vendored Tcl web framework |
+| `wapp/` | Tcl web framework (git submodule → jbroll/wapp) |
 | `simple-ci.conf` | Default configuration template |
 | `ci/smoke` | HTTP API smoke tests; run after deployments |
 | `ci/lint` | shellcheck for all shell scripts |

@@ -8,9 +8,8 @@ set -euo pipefail
 CI_WORKSPACE="${CI_WORKSPACE:-$HOME/ci-workspace}"
 CI_WORKTREES="${CI_WORKTREES:-/data/john/ci-worktrees}"
 CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
-LINDA_DIR="${LINDA_DIR:-$HOME/ci-linda}"
 
-mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES" "$CI_LOGS" "$LINDA_DIR"
+mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES" "$CI_LOGS"
 echo "Directories ready."
 
 # Wicketmap declares file: deps on sibling repos.  Each worktree lands in
@@ -47,13 +46,10 @@ Next steps on this host:
      cd $CI_WORKSPACE/jazz-mock    && npm install && npm run build
    Re-run after pulling updates to any of these repos.
 
-3. Start the worker (keep running, e.g. via a runit/systemd service):
-     nohup $HOME/src/simple-ci/ci-worker.sh >> $CI_LOGS/worker.log 2>&1 &
-
-4. Start the HTTP server:
+3. Start the HTTP server (it dispatches jobs directly; no separate worker):
      $HOME/src/simple-ci/ci-server.tcl -server 127.0.0.1:8080
 
-5. Add log rotation to cron (keeps newest 500 entries):
+4. Add log rotation to cron (keeps newest 500 entries):
      0 3 * * *  ls -t $CI_LOGS/*.log $CI_LOGS/*.status 2>/dev/null | tail -n +501 | xargs rm -f
 
 EOF

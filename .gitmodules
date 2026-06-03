@@ -1,0 +1,3 @@
+[submodule "wapp"]
+	path = wapp
+	url = https://github.com/jbroll/wapp.git

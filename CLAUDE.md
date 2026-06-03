@@ -45,8 +45,11 @@ The old individual scripts (`ci-push.sh`, `ci-wait.sh`, `ci-stat.sh`, `ci-kill.s
 Only `ci-server` is runit-supervised. After pushing changes:
 
 ```bash
-ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
+ssh gpu 'git -C ~/src/simple-ci pull --recurse-submodules && sudo sv restart ci-server'
 ```
+
+The `wapp/` Tcl framework is a git submodule. First deploy after this change
+needs `git -C ~/src/simple-ci submodule update --init`.
 
 Logs via svlogd: `/var/log/ci-server/`.
 
@@ -55,7 +58,8 @@ Logs via svlogd: `/var/log/ci-server/`.
 `ci/` contains scripts pushable via `sci push simple-ci/SCRIPT`:
 
 - `ci/smoke` — HTTP API smoke tests (health, jobs, error validation)
-- `ci/lint`  — shellcheck on ci-run.sh, ci-rsync.sh, sci
+- `ci/lint`  — shellcheck on the shell scripts (ci-run, ci-rsync, sci, ci-setup, ci/smoke, ci/e2e)
+- `ci/e2e`   — boots an ephemeral ci-server from the worktree and runs real pass+fail jobs through the full lifecycle (dispatch → ci-run → worktree → status), plus the dispatch hooks. Run locally as `./ci/e2e` before deploying
 
 Requires `simple-ci` in gpu's ci-workspace:
 ```bash
@@ -74,7 +78,7 @@ Or run locally: `CI_SERVER_URL=http://gpu:8080 ./ci/smoke`
 
 | Repo | Remote | Script | Notes |
 |---|---|---|---|
-| `simple-ci` | github:jbroll/simple-ci | `smoke`, `lint` | CI self-tests |
+| `simple-ci` | github:jbroll/simple-ci | `smoke`, `lint`, `e2e` | CI self-tests |
 | `wicketmap` | github:jbroll/wicketmap | `test` | `ci/test` sources `ci/setup.sh` (secrets, .env.local, sibling symlinks) then runs `npm install && npm run test:run` |
 | `jscadui` | github:jbroll/jscadui | `test` | `ci/test` runs `npm install` at repo root then `npm install && npm run test:local` in `packages/openscad` |
 | `jbr-jazz` | github:jbroll/jbr-jazz | dependency only | must `git pull && npm install && npm run build` after updates |

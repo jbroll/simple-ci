@@ -4,8 +4,8 @@ package require Tcl 8.6-
 
 set script_dir [file dirname [file normalize [info script]]]
 
-source [file join $script_dir wapp.tcl]
-source [file join $script_dir wapp-routes.tcl]
+source [file join $script_dir wapp wapp.tcl]
+source [file join $script_dir wapp wapp-routes.tcl]
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 proc env-or {var default} {
@@ -111,21 +111,18 @@ proc wapp-before-dispatch-hook {} {
     wapp-allow-xorigin-params
 }
 
-proc wapp-route-dispatch {page} {
-    if {![client-allowed]} { json-err "403 Forbidden" "access denied"; return }
+proc wapp-route-filter {page} {
+    if {![client-allowed]} { json-err "403 Forbidden" "access denied"; return 0 }
     if {[wapp-param REQUEST_METHOD] eq "OPTIONS"} {
-        wapp-reply-code "200 OK"
-        wapp ""
-        return
+        wapp-reply-code "200 OK"; wapp ""; return 0
     }
-    set method [wapp-param REQUEST_METHOD]
-    if {[info command wapp-page-${page}-${method}] ne ""} {
-        wapp-page-${page}-${method}
-    } else {
-        wapp-reply-code "404 Not Found"
-        wapp-mimetype "application/json"
-        wapp "{\"error\":\"not found\"}"
-    }
+    return 1
+}
+
+proc wapp-route-notfound {page} {
+    wapp-reply-code "404 Not Found"
+    wapp-mimetype "application/json"
+    wapp "{\"error\":\"not found\"}"
 }
 
 proc json-ok  {body} { wapp-mimetype "application/json; charset=utf-8"; wapp $body }
@@ -186,7 +183,7 @@ wapp-route POST /job {
         set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s"%s}} \
                         $id [json-str $repo] [json-str $commit] [json-str $script] $subdir_json]
         atomic-write [status-file $id] $status
-        after 0 dispatch-jobs
+        kick-dispatch
 
         wapp-reply-code "202 Accepted"
         json-ok $status
@@ -350,8 +347,19 @@ proc wapp-default {} {
 # concurrent jobs. Jobs are claimed atomically (status queued→running) before
 # spawning to prevent double-dispatch across loop iterations.
 
+# A single tracked timer drives dispatch: dispatch-jobs re-arms exactly one
+# pending `after`, and kick-dispatch reschedules it to fire now. Both cancel the
+# stored id first so submissions can't accumulate parallel dispatch loops.
+set dispatch_after ""
+proc kick-dispatch {} {
+    global dispatch_after
+    after cancel $dispatch_after
+    set dispatch_after [after 0 dispatch-jobs]
+}
+
 proc dispatch-jobs {} {
-    global CI_LOGS CI_WORKERS script_dir
+    global CI_LOGS CI_WORKERS script_dir dispatch_after
+    after cancel $dispatch_after
     # Single pass: count running and collect queued jobs (oldest first).
     # Also collect slots claimed by running jobs so we can hand a unique slot
     # index to each newly-dispatched job (CI_SLOT_INDEX env var). Consumers
@@ -393,7 +401,7 @@ proc dispatch-jobs {} {
         incr running
     }
 
-    after 500 dispatch-jobs
+    set dispatch_after [after 500 dispatch-jobs]
 }
 
 # ── Zombie / expiry maintenance (runs independently of dispatch) ───────────────
@@ -411,7 +419,7 @@ proc job-timestamp {data} {
 
 proc parse-iso-time {ts} {
     set ts [string trimright $ts Z]
-    clock scan $ts -format %Y-%m-%dT%H:%M:%S
+    clock scan $ts -format %Y-%m-%dT%H:%M:%S -gmt 1
 }
 
 proc job-lock-held {id} {
@@ -490,8 +498,9 @@ proc prune-worktrees {} {
 }
 
 proc maintenance {} {
+    global maintenance_ticks
     expire-old-jobs
-    prune-worktrees
+    if {[incr maintenance_ticks] % 6 == 0} { prune-worktrees }
     after 10000 maintenance
 }
 
@@ -531,7 +540,7 @@ proc schedule-job {repo script} {
                     $id [json-str $repo] [json-str $commit] [json-str $scriptname]]
     atomic-write [status-file $id] $status
     puts stderr "schedule-job: queued $repo/ci/$scriptname @ [string range $commit 0 7] (job $id)"
-    after 0 dispatch-jobs
+    kick-dispatch
 }
 
 set CI_SCHEDULE [env-or CI_SCHEDULE [file join $::env(HOME) .config/simple-ci/schedule.tcl]]
@@ -555,7 +564,7 @@ proc load-schedule {} {
 # ── Start ─────────────────────────────────────────────────────────────────────
 if {[llength $argv] == 0} { set argv [list -server 0.0.0.0:8080] }
 # Kick off dispatch and maintenance loops; after 100ms gives wapp time to start
-after 100 dispatch-jobs
+set dispatch_after [after 100 dispatch-jobs]
 after 100 maintenance
 after 100 load-schedule
 wapp-start $argv

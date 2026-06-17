@@ -468,10 +468,14 @@ proc expire-old-jobs {} {
             } else {
                 set age [expr {[clock seconds] - [parse-iso-time $ts]}]
             }
-            # Reclaim the large worktree first, after a short grace; keep the
-            # status/log/lock until the full CI_JOB_TTL so `sci stat` history
-            # survives.
-            if {$CI_WORKTREE_TTL > 0 && $age >= $CI_WORKTREE_TTL} {
+            # Reclaim the large worktree after a short grace — but ONLY for jobs
+            # that PASSED. A failed job is the one you debug, and its trace,
+            # screenshots, and auth/test state live in the worktree; reclaiming
+            # those early makes failures uninvestigable. Keep a failed job's
+            # worktree for the full CI_JOB_TTL (like its status/log); passing
+            # jobs' worktrees are large and unneeded, so still go at CI_WORKTREE_TTL.
+            if {$CI_WORKTREE_TTL > 0 && $age >= $CI_WORKTREE_TTL
+                    && [regexp {"status":"pass"} $data]} {
                 remove-job-worktree $data
             }
             if {$age < $CI_JOB_TTL} continue

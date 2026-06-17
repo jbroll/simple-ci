@@ -501,9 +501,35 @@ proc prune-worktrees {} {
     }
 }
 
+# Fire $CI_IDLE_HOOK (a shell command) once each time the queue drains from
+# busy → idle (no running and no queued jobs). Used to recycle shared, stateful
+# test infra (e.g. an in-memory Jazz sync peer that accumulates CoValues across
+# jobs) safely — only when nothing is running, so a job is never disrupted. The
+# hook itself decides whether action is needed (e.g. only restart if bloated).
+set CI_IDLE_HOOK [env-or CI_IDLE_HOOK ""]
+set was_busy 0
+
+proc check-idle-hook {} {
+    global CI_LOGS CI_IDLE_HOOK was_busy
+    if {$CI_IDLE_HOOK eq ""} return
+    set busy 0
+    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
+        catch {
+            if {[regexp {"status":"(running|queued)"} [read-file $f]]} { set busy 1 }
+        }
+        if {$busy} break
+    }
+    if {!$busy && $was_busy} {
+        # Detached + best-effort: a slow/failing hook must not stall the loop.
+        catch {exec sh -c $CI_IDLE_HOOK >/dev/null 2>@1 &}
+    }
+    set was_busy $busy
+}
+
 proc maintenance {} {
     global maintenance_ticks
     expire-old-jobs
+    check-idle-hook
     if {[incr maintenance_ticks] % 6 == 0} { prune-worktrees }
     after 10000 maintenance
 }

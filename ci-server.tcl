@@ -410,6 +410,13 @@ set CI_JOB_TTL [env-or CI_JOB_TTL 7200]
 # pre-commit hook scp's lcov out of the worktree within seconds of completion,
 # so a 15-minute grace is safe. Set 0 to keep worktrees for the full CI_JOB_TTL.
 set CI_WORKTREE_TTL [env-or CI_WORKTREE_TTL 900]
+# Grace before a "running" job whose lock isn't held YET is reaped as stale.
+# dispatch-jobs marks a job "running" and THEN launches ci-run.sh (setsid &),
+# which acquires its flock a moment later. An expire sweep firing in that startup
+# window would otherwise see status=running + lock-not-held and delete the
+# worktree out from under the starting job (→ "ci/SCRIPT not found or not
+# executable"). Must comfortably exceed worst-case ci-run.sh startup.
+set CI_RUNNING_GRACE [env-or CI_RUNNING_GRACE 30]
 
 proc job-timestamp {data} {
     if {[regexp {"finished":"([^"]+)"} $data -> ts]} { return $ts }
@@ -439,7 +446,7 @@ proc remove-job-worktree {data} {
 }
 
 proc expire-old-jobs {} {
-    global CI_LOGS CI_JOB_TTL CI_WORKTREE_TTL
+    global CI_LOGS CI_JOB_TTL CI_WORKTREE_TTL CI_RUNNING_GRACE
     if {$CI_JOB_TTL <= 0} return
     foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
         if {[catch {
@@ -447,6 +454,17 @@ proc expire-old-jobs {} {
             set id [file rootname [file tail $f]]
             if {[regexp {"status":"running"} $data]} {
                 if {![job-lock-held $id]} {
+                    # A just-dispatched job is "running" before ci-run.sh grabs
+                    # its flock. Don't reap during that startup window or we
+                    # delete the worktree out from under a starting job (TOCTOU).
+                    # Only reap a not-locked running job once it's past the grace.
+                    set rts [job-timestamp $data]
+                    if {$rts eq ""} {
+                        set rage [expr {[clock seconds] - [file mtime $f]}]
+                    } else {
+                        set rage [expr {[clock seconds] - [parse-iso-time $rts]}]
+                    }
+                    if {$rage < $CI_RUNNING_GRACE} continue
                     set lf [lock-file $id]
                     if {[file exists $lf]} {
                         set pid [string trim [read-file $lf]]
@@ -483,7 +501,12 @@ proc expire-old-jobs {} {
             file delete -force $f
             file delete -force [log-file $id]
             file delete -force [lock-file $id]
-        } err]} {
+        } err] == 1} {
+            # Only a real TCL_ERROR (code 1) is worth logging. The body uses
+            # `continue` (code 4) to skip jobs that aren't expired yet; catch
+            # captures that as a non-zero code too, so the old `[catch ...]`
+            # truthiness test spuriously logged a blank error for every skipped
+            # job on every sweep (thousands of lines). `== 1` logs only errors.
             puts stderr "expire-old-jobs: [file tail $f]: $err"
         }
     }

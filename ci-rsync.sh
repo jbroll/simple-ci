@@ -10,6 +10,30 @@
 # Creates a git worktree at origin/HEAD, replaces destination with it,
 # runs the real rsync, then queues the job by writing a .status file.
 # Prints the job ID to stderr (visible to the rsync client).
+#
+# WHAT GETS TESTED — base + overlay (read this before assuming "it tests the
+# pushed commit"):
+#   1. BASE: `git fetch origin` then `git worktree add <worktree> origin/HEAD`.
+#      origin/HEAD is the last commit pushed to the upstream remote. This is
+#      ONLY a starting point — NOT what gets tested as-is.
+#   2. OVERLAY: the client's `sci push` rsyncs the developer's ENTIRE local
+#      working tree on top of that worktree:
+#        rsync -a $CI_RSYNC_ARGS --filter=':- .gitignore' --exclude=.git . DEST
+#      There is NO `--exclude='*'`, so `-a .` copies every local file that is
+#      not gitignored and not .git — INCLUDING tracked source like packages/*/src.
+#   => The tested tree = origin/HEAD  +  your local working tree overlaid.
+#      Local UNCOMMITTED / UNPUSHED changes (e.g. a src/ fix) ARE tested. A file
+#      only survives from the base if the overlay didn't deliver it (i.e. it's
+#      gitignored locally or otherwise not sent).
+#   The CI_RSYNC_ARGS `--include` rules (in a repo's ci/simple-ci.conf) exist
+#   ONLY to force gitignored dirs (e.g. generated example/test corpora) INTO the
+#   overlay despite the .gitignore filter. They do NOT restrict the overlay to
+#   those paths — without a trailing `--exclude='*'`, everything non-ignored
+#   still syncs.
+#   COMMON MISCONCEPTION: "the printed 'Preparing worktree (detached HEAD <sha>)'
+#   means CI tests <sha>." It does not — <sha> is just the BASE; your local tree
+#   is layered on top. To test ONLY a committed/pushed commit with no local
+#   overlay, use the HTTP path (POST /job with repo+commit+script) instead.
 
 set -euo pipefail
 

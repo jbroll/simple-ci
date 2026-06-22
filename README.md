@@ -37,7 +37,17 @@ Jobs move through states: `queued` → `running` → `pass` | `fail` | `killed`.
 
 **rsync path** (`sci push` + `ci-rsync.sh`): The developer's working tree is rsynced directly into a fresh git worktree on the build host. Useful for testing uncommitted changes or gitignored files (e.g. generated test data). This is the primary path.
 
-**HTTP path** (`POST /job`): Submit a repo name, commit hash, and script name. The server fetches the commit from the upstream remote and creates a worktree from it. Useful for post-merge validation or triggering from other scripts.
+> **What actually gets tested: base + overlay.** `ci-rsync.sh` first creates a worktree at `origin/HEAD` (the last commit pushed upstream) as a **base**, then overlays your **entire local working tree** on top via:
+> ```
+> rsync -a $CI_RSYNC_ARGS --filter=':- .gitignore' --exclude=.git . DEST
+> ```
+> There is **no `--exclude='*'`** — so `-a .` copies every local file that isn't gitignored or `.git`, **including tracked source** (`packages/*/src`, etc.). So the tested tree is **`origin/HEAD` + your local working tree overlaid**, and your **uncommitted/unpushed local changes ARE tested**. You do *not* need to push to GitHub for `sci push` to pick up a local fix.
+>
+> The `CI_RSYNC_ARGS --include` rules in a repo's `ci/simple-ci.conf` exist **only** to force gitignored directories (e.g. generated example/test corpora) *into* the overlay despite the `.gitignore` filter — they do **not** restrict the overlay to those paths.
+>
+> Common misconception: the `Preparing worktree (detached HEAD <sha>)` line means `<sha>` is just the **base**, not "the commit that gets tested." To test *only* a committed commit with no local overlay, use the HTTP path below.
+
+**HTTP path** (`POST /job`): Submit a repo name, commit hash, and script name. The server fetches the commit from the upstream remote and creates a worktree from it — **no local overlay**, so this tests exactly the committed source. Useful for post-merge validation or triggering from other scripts.
 
 ### Job dispatch
 

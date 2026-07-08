@@ -323,9 +323,14 @@ cmd_push() {
     tmp=$(mktemp)
     trap 'rm -f "${tmp:-}"' EXIT
 
+    # --delete mirrors the local tree onto the base worktree so the tested tree matches yours
+    # exactly — without it, a file you deleted locally (relative to origin/HEAD) survives from the
+    # base and CI tests code you don't have. --exclude=.git and the .gitignore filter also protect
+    # those paths from deletion (excluded paths are never deleted), so .git and gitignored build
+    # artifacts (node_modules, dist) are left intact.
     # shellcheck disable=SC2086
     rsync --rsync-path="$CI_REMOTE_SCRIPT" \
-        -a ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
+        -a --delete ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
         . "$CI_HOST:$script_arg" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
 
     cat "$tmp" >&2

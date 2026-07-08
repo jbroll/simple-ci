@@ -3,7 +3,7 @@
 #
 # Used as --rsync-path on the client:
 #   rsync --rsync-path=~/src/simple-ci/ci-rsync.sh \
-#     -a --filter=':- .gitignore' --exclude=.git \
+#     -a --delete --filter=':- .gitignore' --exclude=.git \
 #     . gpu:REPO[/SUBDIR]/SCRIPT
 #
 # Parses repo, optional subdir, and script from the destination path.
@@ -17,14 +17,17 @@
 #      origin/HEAD is the last commit pushed to the upstream remote. This is
 #      ONLY a starting point — NOT what gets tested as-is.
 #   2. OVERLAY: the client's `sci push` rsyncs the developer's ENTIRE local
-#      working tree on top of that worktree:
-#        rsync -a $CI_RSYNC_ARGS --filter=':- .gitignore' --exclude=.git . DEST
-#      There is NO `--exclude='*'`, so `-a .` copies every local file that is
-#      not gitignored and not .git — INCLUDING tracked source like packages/*/src.
-#   => The tested tree = origin/HEAD  +  your local working tree overlaid.
-#      Local UNCOMMITTED / UNPUSHED changes (e.g. a src/ fix) ARE tested. A file
-#      only survives from the base if the overlay didn't deliver it (i.e. it's
-#      gitignored locally or otherwise not sent).
+#      working tree onto that worktree, WITH --delete so it MIRRORS:
+#        rsync -a --delete $CI_RSYNC_ARGS --filter=':- .gitignore' --exclude=.git . DEST
+#      There is NO `--exclude='*'`, so `-a .` copies every local file that is not
+#      gitignored and not .git — INCLUDING tracked source like packages/*/src — and
+#      --delete removes base files your tree lacks, so a locally DELETED file is
+#      deleted in the worktree too. Excluded paths (.git and gitignored artifacts
+#      like node_modules/dist) are protected from --delete.
+#   => The tested tree's tracked files EXACTLY match your local working tree.
+#      Local UNCOMMITTED / UNPUSHED changes — adds, edits, AND deletes — are all
+#      tested. The base only contributes .git plus gitignored artifacts the overlay
+#      doesn't send.
 #   The CI_RSYNC_ARGS `--include` rules (in a repo's ci/simple-ci.conf) exist
 #   ONLY to force gitignored dirs (e.g. generated example/test corpora) INTO the
 #   overlay despite the .gitignore filter. They do NOT restrict the overlay to

@@ -2,6 +2,8 @@
 
 A minimal distributed CI system. Jobs are submitted from a developer machine and executed in isolation on a build host. The system is intentionally small: ~200 lines of Tcl for the HTTP server, ~110 lines of bash for the per-job runner, ~160 lines of bash for the client CLI.
 
+Putting a repo on CI for the first time: **[`docs/quickstart.md`](docs/quickstart.md)** — the five steps in order, with the failure mode each one produces when skipped. The rest of this file is reference.
+
 ## Architecture
 
 ```
@@ -147,8 +149,12 @@ git clone git@github.com:you/myrepo.git ~/ci-workspace/myrepo
 git clone git@github.com:jbroll/simple-ci.git ~/src/simple-ci
 ln -s ~/src/simple-ci/sci ~/bin/sci
 
-# Copy or create a project config (see Configuration)
-cp ~/src/simple-ci/simple-ci.conf ./ci/simple-ci.conf
+# Name the build host (see Configuration). One per-machine config covers every
+# repo; a project only needs ./ci/simple-ci.conf when it must override the host.
+# simple-ci.conf in this repo is a template with no real host in it — copying it
+# as-is leaves CI_HOST unset, which fails loudly rather than guessing.
+$EDITOR ~/.config/simple-ci.conf
+sci host      # confirm it resolves before pushing anything
 ```
 
 ## Configuration

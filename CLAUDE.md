@@ -41,12 +41,12 @@ The old individual scripts (`ci-push.sh`, `ci-wait.sh`, `ci-stat.sh`, `ci-kill.s
 - **wapp-route page-name collision**: `wapp-route METHOD /a/b/c` and `wapp-route METHOD /a/x` both generate `wapp-page-a-METHOD`, so the last definition silently wins. The `POST /job` (create) and `POST /job/:id/kill` handlers are merged into one proc that dispatches on `PATH_TAIL` to avoid this.
 - **`resolve-job-id` must verify existence**: For full 16-char IDs, the fast path must still check that the `.status` file exists, otherwise `read-file` throws an uncaught error.
 
-## Deployment on gpu
+## Deployment on the CI host
 
 Only `ci-server` is runit-supervised. After pushing changes:
 
 ```bash
-ssh gpu 'git -C ~/src/simple-ci pull --recurse-submodules && sudo sv restart ci-server'
+ssh "$CI_HOST" 'git -C ~/src/simple-ci pull --recurse-submodules && sudo sv restart ci-server'
 ```
 
 The `wapp/` Tcl framework is a git submodule. First deploy after this change
@@ -62,9 +62,9 @@ Logs via svlogd: `/var/log/ci-server/`.
 - `ci/lint`  — shellcheck on the shell scripts (ci-run, ci-rsync, sci, ci-setup, ci/smoke, ci/e2e)
 - `ci/e2e`   — boots an ephemeral ci-server from the worktree and runs real pass+fail jobs through the full lifecycle (dispatch → ci-run → worktree → status), plus the dispatch hooks. Run locally as `./ci/e2e` before deploying
 
-Requires `simple-ci` in gpu's ci-workspace:
+Requires `simple-ci` in the CI host's ci-workspace:
 ```bash
-ssh gpu 'git clone ~/src/simple-ci ~/ci-workspace/simple-ci'
+ssh "$CI_HOST" 'git clone ~/src/simple-ci ~/ci-workspace/simple-ci'
 ```
 
 Run after any deployment:
@@ -73,9 +73,9 @@ sci push simple-ci/smoke && sci wait <job-id>
 sci push simple-ci/lint  && sci wait <job-id>
 ```
 
-Or run locally: `CI_SERVER_URL=http://gpu:8080 ./ci/smoke`
+Or run locally: `CI_SERVER_URL=http://buildhost:8080 ./ci/smoke`
 
-## Target Repos on gpu
+## Target Repos on the CI host
 
 | Repo | Remote | Script | Notes |
 |---|---|---|---|

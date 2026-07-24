@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke tests for the simple-ci HTTP API.
-# Usage: CI_SERVER_URL=http://gpu:8080 ./ci/smoke
+# Usage: CI_SERVER_URL=http://buildhost:8080 ./ci/smoke
 set -euo pipefail
 
 CI_SERVER_URL="${CI_SERVER_URL:-http://localhost:8080}"

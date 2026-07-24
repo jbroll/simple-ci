@@ -5,7 +5,7 @@ A minimal distributed CI system. Jobs are submitted from a developer machine and
 ## Architecture
 
 ```
-Developer machine                       Build host (gpu)
+Developer machine                       Build host
 ─────────────────                       ────────────────────────────────
 sci push ────rsync──────────────────▶ ci-rsync.sh
                                             │ creates git worktree
@@ -166,7 +166,7 @@ Configuration is sourced as shell variables in order; first file found wins:
 |---|---|---|
 | `CI_HOST` | `sci push` | SSH hostname of the build host |
 | `CI_REMOTE_SCRIPT` | `sci push` | Path to `ci-rsync.sh` on the build host |
-| `CI_SERVER_URL` | `sci` (all except push) | Base URL of `ci-server.tcl`, e.g. `http://gpu:8080` |
+| `CI_SERVER_URL` | `sci` (all except push) | Base URL of `ci-server.tcl`, e.g. `http://buildhost:8080` |
 | `CI_RSYNC_ARGS` | `sci push` | Extra rsync flags; use for `--include` rules to sync gitignored files |
 | `CI_WORKERS` | server | Max concurrent jobs (default: 3) |
 | `CI_ALLOWED_NETS` | server | Space-separated IP prefixes allowed to reach the server; empty means allow all |
@@ -181,8 +181,8 @@ When defined, `CI_HOSTS` is an ordered array of build hosts. `sci` probes each e
 
 ```bash
 CI_HOSTS=(
-    "gpu:http://gpu:8080"              # direct HTTP — probe $url/health
-    "home.rkroll.com:tunnel:8080"      # SSH tunnel — auto-selects local port 18080+
+    "buildhost:http://buildhost:8080"     # direct HTTP — probe $url/health
+    "buildhost.example.com:tunnel:8080"   # SSH tunnel — auto-selects local port 18080+
 )
 ```
 
@@ -192,13 +192,13 @@ Tunnel processes are long-lived and reused across `sci` invocations. `CI_HOST`, 
 
 ```bash
 CI_HOSTS=(
-    "gpu:http://gpu:8080"
-    "home.rkroll.com:tunnel:8080"
+    "buildhost:http://buildhost:8080"
+    "buildhost.example.com:tunnel:8080"
 )
 
-CI_HOST=gpu
+CI_HOST=buildhost
 CI_REMOTE_SCRIPT=~/src/simple-ci/ci-rsync.sh
-CI_SERVER_URL=http://gpu:8080
+CI_SERVER_URL=http://buildhost:8080
 ```
 
 ## Client Usage
@@ -295,7 +295,7 @@ Only `ci-server` needs a runit service. The server spawns `ci-run.sh` directly.
 #!/bin/sh
 export HOME=/home/john
 export PATH=/home/john/bin:/usr/local/bin:/usr/bin:/bin
-export CI_ALLOWED_NETS="127.0.0.1 192.168.1."
+export CI_ALLOWED_NETS="127.0.0.1 10.0.0."
 export CI_WORKSPACE=/home/john/ci-workspace
 export CI_WORKTREES=/home/john/ci-worktrees
 export CI_LOGS=/home/john/ci-logs
@@ -307,7 +307,7 @@ Enable with `ln -s /etc/sv/ci-server /var/service/`. Logs via svlogd at `/var/lo
 
 After pulling updates:
 ```bash
-ssh gpu 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
+ssh "$CI_HOST" 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
 ```
 
 `HOME` must be set explicitly — runit does not inherit it.

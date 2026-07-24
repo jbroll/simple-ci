@@ -4,7 +4,7 @@
 # Used as --rsync-path on the client:
 #   rsync --rsync-path=~/src/simple-ci/ci-rsync.sh \
 #     -a --delete --filter=':- .gitignore' --exclude=.git \
-#     . gpu:REPO[/SUBDIR]/SCRIPT
+#     . buildhost:REPO[/SUBDIR]/SCRIPT
 #
 # Parses repo, optional subdir, and script from the destination path.
 # Creates a git worktree at origin/HEAD, replaces destination with it,

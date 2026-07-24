@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run once on the build host (gpu) to initialise the workspace.
+# Run once on the build host to initialise the workspace.
 set -euo pipefail
 
 # shellcheck source=/dev/null

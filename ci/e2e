@@ -12,7 +12,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 WORK=$(mktemp -d)
 SRV=""
-cleanup() { [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true; rm -rf "$WORK"; }
+SWEEP_SRV=""
+cleanup() {
+    [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null
+    [[ -n "$SWEEP_SRV" ]] && kill "$SWEEP_SRV" 2>/dev/null
+    rm -rf "$WORK"
+    return 0
+}
 trap cleanup EXIT
 
 export CI_LOGS="$WORK/logs" CI_WORKSPACE="$WORK/ws" CI_WORKTREES="$WORK/wt"
@@ -73,6 +79,37 @@ if curl -s "$URL/log/$id" | grep -q '^ok$'; then ok "pass job log captured"; els
 
 read -r st ex id <<<"$(run_job demo "$COMMIT" bad)"
 if [[ "$st" == fail && "$ex" == 3 ]]; then ok "fail job lifecycle (exit propagated)"; else no "fail job" "status=$st exit=$ex"; fi
+
+# Orphan-worktree sweep. Its own server + paths: the assertions above depend on
+# status files surviving, and this needs directories aged past CI_JOB_TTL.
+SWEEP="$WORK/sweep"
+mkdir -p "$SWEEP/logs" "$SWEEP/ws" "$SWEEP/wt" "$SWEEP/dep"
+OLD=$(date -d '2 hours ago' '+%Y%m%d%H%M')
+mkdir -p "$SWEEP/wt/demo-0123456789abcdef"   # orphan, aged  → swept
+mkdir -p "$SWEEP/wt/demo-fedcba9876543210"   # has a status  → kept
+mkdir -p "$SWEEP/wt/demo-1111111111111111"   # orphan, fresh → kept
+mkdir -p "$SWEEP/wt/demo-nothex"             # wrong shape   → kept
+mkdir -p "$SWEEP/wt/handplaced"              # wrong shape   → kept
+ln -s "$SWEEP/dep" "$SWEEP/wt/deplink"       # dep symlink   → kept
+echo '{"id":"fedcba9876543210","status":"pass"}' > "$SWEEP/logs/fedcba9876543210.status"
+touch -t "$OLD" "$SWEEP/wt/demo-0123456789abcdef" "$SWEEP/wt/demo-nothex" "$SWEEP/wt/handplaced"
+
+SPORT=$(( PORT + 100 ))
+while ss -tln "sport = :$SPORT" 2>/dev/null | grep -q ":$SPORT"; do SPORT=$(( SPORT + 1 )); done
+env HOME="$WORK" CI_LOGS="$SWEEP/logs" CI_WORKSPACE="$SWEEP/ws" CI_WORKTREES="$SWEEP/wt" \
+    tclsh "$REPO/ci-server.tcl" -server "127.0.0.1:$SPORT" >"$WORK/sweep.log" 2>&1 &
+SWEEP_SRV=$!
+for _ in $(seq 1 40); do
+    [[ -d "$SWEEP/wt/demo-0123456789abcdef" ]] || break
+    sleep 0.25
+done
+kill "$SWEEP_SRV" 2>/dev/null || true
+
+if [[ ! -d "$SWEEP/wt/demo-0123456789abcdef" ]]; then ok "sweep removes aged orphan worktree"
+else no "sweep removes aged orphan worktree" "$(cat "$WORK/sweep.log")"; fi
+for keep in demo-fedcba9876543210 demo-1111111111111111 demo-nothex handplaced deplink; do
+    if [[ -e "$SWEEP/wt/$keep" ]]; then ok "sweep keeps $keep"; else no "sweep keeps $keep"; fi
+done
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

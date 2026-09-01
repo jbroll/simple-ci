@@ -16,6 +16,9 @@ set CI_WORKSPACE    [file normalize [env-or CI_WORKSPACE    [file join $::env(HO
 set CI_LOGS         [file normalize [env-or CI_LOGS         [file join $::env(HOME) ci-logs]]]
 set CI_ALLOWED_NETS [env-or CI_ALLOWED_NETS ""]
 set CI_WORKERS      [env-or CI_WORKERS 3]
+# Must match ci-run.sh / ci-rsync.sh — a divergent default would make
+# sweep-orphan-worktrees silently scan an empty directory.
+set CI_WORKTREES    [file normalize [env-or CI_WORKTREES /data/john/ci-worktrees]]
 
 # jbr Tcl modules (jbr::cron scheduling DSL) install as versioned .tm files under
 # ~/lib/tcl8/site-tcl via `make install` in the jbr.tcl repo. Register that on the
@@ -512,6 +515,30 @@ proc expire-old-jobs {} {
     }
 }
 
+# expire-old-jobs only walks status files, so a worktree whose status file is
+# already gone is invisible to it and lives forever. Sweep the worktree root
+# itself, restricted to the <repo>-<16 hex id> name ci-run.sh/ci-rsync.sh
+# create: the root also holds dependency symlinks (see ci-setup.sh) that must
+# survive, and anything hand-placed there is not ours to delete. Gated on
+# CI_JOB_TTL because ci-rsync.sh creates the directory and then rsyncs for
+# minutes before writing the status file.
+proc sweep-orphan-worktrees {} {
+    global CI_WORKTREES CI_WORKSPACE CI_JOB_TTL
+    if {$CI_JOB_TTL <= 0} return
+    foreach dir [glob -nocomplain -type d -directory $CI_WORKTREES *] {
+        if {[file type $dir] eq "link"} continue
+        if {![regexp {^(.+)-([0-9a-f]{16})$} [file tail $dir] -> repo id]} continue
+        if {[file exists [status-file $id]]} continue
+        if {[clock seconds] - [file mtime $dir] < $CI_JOB_TTL} continue
+        catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $dir}
+        if {[catch {file delete -force $dir} err]} {
+            puts stderr "sweep-orphan-worktrees: [file tail $dir]: $err"
+        } else {
+            puts stderr "sweep-orphan-worktrees: removed [file tail $dir]"
+        }
+    }
+}
+
 # Clear stale git worktree admin entries (.git/worktrees/<name>) left behind
 # when a worktree dir was removed without `git worktree prune` — these otherwise
 # accumulate in `git worktree list` indefinitely.
@@ -553,6 +580,7 @@ proc maintenance {} {
     global maintenance_ticks
     expire-old-jobs
     check-idle-hook
+    sweep-orphan-worktrees
     if {[incr maintenance_ticks] % 6 == 0} { prune-worktrees }
     after 10000 maintenance
 }

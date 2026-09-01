@@ -136,6 +136,15 @@ git -C "$CI_WORKSPACE/$repo" worktree add "$WORKTREE" "$BASE"
 flock -u 8
 exec 8>&-
 
+# The status file is the job's liveness record: sweep-orphan-worktrees reclaims
+# any worktree without one, and its age gate cannot save a live transfer —
+# rsync -a stamps the worktree root with the sender's mtime, often hours old.
+# Write a pre-queue status BEFORE the slow rsync; the queue write below
+# replaces it, and the failure paths remove it with the worktree.
+SUBDIR_JSON="${subdir:+,\"subdir\":\"$subdir\"}"
+SELECTOR_JSON="${selector:+,\"selector\":\"$selector\"}"
+printf '%s' "{\"id\":\"$ID\",\"status\":\"rsyncing\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON},\"worktree\":\"$WORKTREE\"}" > "$CI_LOGS/$ID.status"
+
 # ── Run real rsync into the worktree ─────────────────────────────────────────
 args[last]="$WORKTREE/"
 
@@ -147,6 +156,7 @@ exec 3>&1; exec 1>&2  # back to stderr-only for cleanup
 
 if [[ $RSYNC_EXIT -ne 0 ]]; then
     git -C "$CI_WORKSPACE/$repo" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    rm -f "$CI_LOGS/$ID.status"
     exit $RSYNC_EXIT
 fi
 
@@ -165,12 +175,11 @@ if [[ ! -x "$WORKTREE/ci/$script" ]]; then
     echo "ci-rsync:   worktree ci/ listing:" >&2
     ls -la "$WORKTREE/ci" >&2 2>/dev/null || echo "ci-rsync:   (no ci/ directory in worktree)" >&2
     git -C "$CI_WORKSPACE/$repo" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    rm -f "$CI_LOGS/$ID.status"
     exit 1
 fi
 
 # ── Queue the job ─────────────────────────────────────────────────────────────
-SUBDIR_JSON="${subdir:+,\"subdir\":\"$subdir\"}"
-SELECTOR_JSON="${selector:+,\"selector\":\"$selector\"}"
 STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON},\"worktree\":\"$WORKTREE\"}"
 printf '%s' "$STATUS" > "$CI_LOGS/$ID.status"
 

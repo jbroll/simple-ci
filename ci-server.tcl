@@ -529,7 +529,15 @@ proc sweep-orphan-worktrees {} {
         if {[file type $dir] eq "link"} continue
         if {![regexp {^(.+)-([0-9a-f]{16})$} [file tail $dir] -> repo id]} continue
         if {[file exists [status-file $id]]} continue
-        if {[clock seconds] - [file mtime $dir] < $CI_JOB_TTL} continue
+        # rsync -a stamps the worktree root with the sender's mtime, often
+        # hours old, so the dir can look ancient seconds after creation. The
+        # git admin dir records when the worktree was made; age by the newer.
+        set born [file mtime $dir]
+        set admin [file join $CI_WORKSPACE $repo .git worktrees [file tail $dir]]
+        if {[file isdirectory $admin] && [file mtime $admin] > $born} {
+            set born [file mtime $admin]
+        }
+        if {[clock seconds] - $born < $CI_JOB_TTL} continue
         catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $dir}
         if {[catch {file delete -force $dir} err]} {
             puts stderr "sweep-orphan-worktrees: [file tail $dir]: $err"

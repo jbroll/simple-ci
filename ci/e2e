@@ -91,8 +91,11 @@ mkdir -p "$SWEEP/wt/demo-1111111111111111"   # orphan, fresh → kept
 mkdir -p "$SWEEP/wt/demo-nothex"             # wrong shape   → kept
 mkdir -p "$SWEEP/wt/handplaced"              # wrong shape   → kept
 ln -s "$SWEEP/dep" "$SWEEP/wt/deplink"       # dep symlink   → kept
+# old dir mtime (rsync -a stamps the sender's) but fresh git admin dir → kept
+mkdir -p "$SWEEP/wt/demo-2222222222222222" "$SWEEP/ws/demo/.git/worktrees/demo-2222222222222222"
 echo '{"id":"fedcba9876543210","status":"pass"}' > "$SWEEP/logs/fedcba9876543210.status"
-touch -t "$OLD" "$SWEEP/wt/demo-0123456789abcdef" "$SWEEP/wt/demo-nothex" "$SWEEP/wt/handplaced"
+touch -t "$OLD" "$SWEEP/wt/demo-0123456789abcdef" "$SWEEP/wt/demo-nothex" "$SWEEP/wt/handplaced" \
+    "$SWEEP/wt/demo-2222222222222222"
 
 SPORT=$(( PORT + 100 ))
 while ss -tln "sport = :$SPORT" 2>/dev/null | grep -q ":$SPORT"; do SPORT=$(( SPORT + 1 )); done
@@ -107,7 +110,7 @@ kill "$SWEEP_SRV" 2>/dev/null || true
 
 if [[ ! -d "$SWEEP/wt/demo-0123456789abcdef" ]]; then ok "sweep removes aged orphan worktree"
 else no "sweep removes aged orphan worktree" "$(cat "$WORK/sweep.log")"; fi
-for keep in demo-fedcba9876543210 demo-1111111111111111 demo-nothex handplaced deplink; do
+for keep in demo-fedcba9876543210 demo-1111111111111111 demo-2222222222222222 demo-nothex handplaced deplink; do
     if [[ -e "$SWEEP/wt/$keep" ]]; then ok "sweep keeps $keep"; else no "sweep keeps $keep"; fi
 done
 

@@ -87,10 +87,21 @@ resolve_ci_host() {
 # ── Config ────────────────────────────────────────────────────────────────────
 load_conf() {
     local loaded=0
-    for f in "${CI_CONF:-}" "./ci/simple-ci.conf" "$HOME/.config/simple-ci.conf" "$SCRIPT_DIR/simple-ci.conf"; do
+    if [[ -n "${CI_CONF:-}" && -f "${CI_CONF:-}" ]]; then
         # shellcheck disable=SC1090  # conf path is intentionally dynamic
-        [[ -n "$f" && -f "$f" ]] && { source "$f"; loaded=1; break; }
-    done
+        source "$CI_CONF"; loaded=1
+    else
+        # Repo conf first for repo-specific settings (CI_RSYNC_ARGS), then the
+        # machine conf on top: real host names live in ~/.config/simple-ci.conf
+        # and override any host defaults a repo conf carries.
+        for f in "./ci/simple-ci.conf" "$HOME/.config/simple-ci.conf"; do
+            # shellcheck disable=SC1090
+            [[ -f "$f" ]] && { source "$f"; loaded=1; }
+        done
+        # shellcheck disable=SC1090
+        [[ $loaded -eq 0 && -f "$SCRIPT_DIR/simple-ci.conf" ]] &&
+            { source "$SCRIPT_DIR/simple-ci.conf"; loaded=1; }
+    fi
     (( loaded )) || { echo "sci: no simple-ci.conf found" >&2; exit 1; }
 
     # If CI_HOSTS array is defined, probe in order and set CI_HOST + CI_SERVER_URL
@@ -181,7 +192,8 @@ Commands:
 
 Run 'sci help <command>' for details.
 
-Config searched: $CI_CONF, ./ci/simple-ci.conf, ~/.config/simple-ci.conf, <script-dir>/simple-ci.conf
+Config: $CI_CONF alone if set; else ./ci/simple-ci.conf then ~/.config/simple-ci.conf
+layered on top (machine conf wins for hosts); <script-dir>/simple-ci.conf as fallback.
 
 CI_HOSTS entries:
   "host:http://url"         direct HTTP

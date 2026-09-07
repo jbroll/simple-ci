@@ -6,16 +6,17 @@ the step. Reference material for each piece is in [`../README.md`](../README.md)
 
 ## 1. Point the client at a host
 
-`sci` reads the first config it finds, in this order:
+`sci` layers its config:
 
 ```
-$CI_CONF
-./ci/simple-ci.conf        per project
-~/.config/simple-ci.conf   per machine
-~/src/simple-ci/simple-ci.conf   the repo's template — names no real host
+$CI_CONF                   if set, used alone
+./ci/simple-ci.conf        per project — repo-specific settings (CI_RSYNC_ARGS)
+~/.config/simple-ci.conf   per machine — sourced on top, wins for host names
+~/src/simple-ci/simple-ci.conf   template fallback when neither exists — names no real host
 ```
 
-Real host names belong in one of the first three. The template in this repo
+Real host names belong in `$CI_CONF` or the machine conf; a host default in a
+repo conf is overridden by the machine conf. The template in this repo
 deliberately leaves `CI_HOST` unset, so falling through to it fails with
 `CI_HOST must be set in simple-ci.conf` rather than guessing.
 

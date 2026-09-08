@@ -28,7 +28,13 @@ CI_HOSTS=(
     "buildhost.example.com:tunnel:8080"   # SSH tunnel — auto-selects local port 18080+
 )
 
+CI_READ_HOSTS=(
+    "buildhost"                           # shell login for copying artifacts back
+    "buildhost.example.com"
+)
+
 CI_HOST=buildhost
+CI_READ_HOST=buildhost
 CI_REMOTE_SCRIPT=~/src/simple-ci/ci-rsync.sh
 CI_SERVER_URL=http://buildhost:8080
 ```
@@ -37,10 +43,16 @@ CI_SERVER_URL=http://buildhost:8080
 entry first and a tunnel to the same box second: a host exposed only on the LAN is
 then still reachable from outside it.
 
-Check it resolves before going further:
+`CI_READ_HOSTS` runs parallel to `CI_HOSTS`, one entry per route. Pushes go to the
+CI service user, whose key is forced to `ci-rsync.sh` and cannot serve `scp`, so
+retrieving a job's coverage or build output needs a shell-capable login — and the
+right one depends on which route resolved.
+
+Check they resolve before going further:
 
 ```bash
 sci host      # prints the host it selected
+sci readhost  # prints the artifact-read login for that route
 ```
 
 **Symptom if this is wrong:** `ssh: connect to host <ip> port 22: Connection timed

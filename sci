@@ -62,26 +62,41 @@ _ci_open_tunnel() {
 #   "host:http://url"       — direct HTTP, probe $url/health
 #   "host:tunnel:port"      — SSH tunnel to remote port, API via localhost
 resolve_ci_host() {
+    local i entry host rest
     # shellcheck disable=SC2153  # CI_HOSTS is defined in the sourced conf file
-    for entry in "${CI_HOSTS[@]}"; do
-        local host="${entry%%:*}"
-        local rest="${entry#*:}"
+    for i in "${!CI_HOSTS[@]}"; do
+        entry="${CI_HOSTS[$i]}"
+        host="${entry%%:*}"
+        rest="${entry#*:}"
 
         if [[ "$rest" == tunnel:* ]]; then
             local remote_port="${rest#tunnel:}"
             if _ci_open_tunnel "$host" "$remote_port"; then
                 CI_HOST="$host"
+                _set_read_host "$i"
                 return 0
             fi
         else
             if curl -sf --max-time 2 "$rest/health" >/dev/null 2>&1; then
                 CI_HOST="$host"
                 CI_SERVER_URL="$rest"
+                _set_read_host "$i"
                 return 0
             fi
         fi
     done
     return 1
+}
+
+# The push identity's key is forced to the CI receive script and can run no
+# other command, so artifacts come back over a separate shell-capable login —
+# one per route, since an off-LAN route reaches the box under a different name.
+_set_read_host() {
+    # shellcheck disable=SC2153  # CI_READ_HOSTS is defined in the sourced conf file
+    declare -p CI_READ_HOSTS >/dev/null 2>&1 || return 0
+    local read_host="${CI_READ_HOSTS[$1]:-}"
+    [[ -n "$read_host" ]] && CI_READ_HOST="$read_host"
+    return 0
 }
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -98,7 +113,7 @@ load_conf() {
             # shellcheck disable=SC1090
             [[ -f "$f" ]] && { source "$f"; loaded=1; }
         done
-        # shellcheck disable=SC1090
+        # shellcheck disable=SC1090,SC1091
         [[ $loaded -eq 0 && -f "$SCRIPT_DIR/simple-ci.conf" ]] &&
             { source "$SCRIPT_DIR/simple-ci.conf"; loaded=1; }
     fi
@@ -188,6 +203,9 @@ Commands:
   log    JOB-ID                                   print the full raw job log
   kill   JOB-ID                                   kill a running job
   clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
+  host                                            print the resolved push host
+  readhost                                        print the resolved artifact-read host
+  path   JOB-ID                                   print a job's worktree path on the host
   help   [COMMAND]                                show help
 
 Run 'sci help <command>' for details.
@@ -580,6 +598,13 @@ cmd_host() {
     echo "$CI_HOST"
 }
 
+cmd_readhost() {
+    load_conf
+    : "${CI_HOST:?no CI host reachable}"
+    : "${CI_READ_HOST:?no CI_READ_HOSTS entry for the resolved route ($CI_HOST)}"
+    echo "$CI_READ_HOST"
+}
+
 case "$cmd" in
     stat)             cmd_stat  "$@" ;;
     push)             cmd_push  "$@" ;;
@@ -588,6 +613,7 @@ case "$cmd" in
     kill)             cmd_kill  "$@" ;;
     clean)            cmd_clean "$@" ;;
     host)             cmd_host  "$@" ;;
+    readhost)         cmd_readhost "$@" ;;
     path)             cmd_path  "$@" ;;
     help|-h|--help)   cmd_help  "$@" ;;
     *)

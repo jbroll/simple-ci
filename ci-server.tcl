@@ -106,11 +106,8 @@ proc json-str {s} {
     string map {\\ \\\\ \" \\\" \n \\n \r \\r \t \\t} $s
 }
 
-# ── CORS + routing ────────────────────────────────────────────────────────────
+# ── Routing ───────────────────────────────────────────────────────────────────
 proc wapp-before-dispatch-hook {} {
-    wapp-reply-extra "Access-Control-Allow-Origin" "*"
-    wapp-reply-extra "Access-Control-Allow-Methods" "GET, POST, DELETE, OPTIONS"
-    wapp-reply-extra "Access-Control-Allow-Headers" "Content-Type"
     wapp-allow-xorigin-params
 }
 

@@ -1,0 +1,62 @@
+#!/usr/bin/env tclsh
+# Unit tests for artifact path confinement. Usage: ./ci/unit
+source [file join [file dirname [file dirname [file normalize [info script]]]] artifact-path.tcl]
+
+set pass 0
+set fail 0
+
+proc ok {desc script} {
+    global pass fail
+    if {[uplevel 1 [list expr $script]]} {
+        puts "pass: $desc"; incr pass
+    } else {
+        puts "FAIL: $desc"; incr fail
+    }
+}
+
+proc refused {desc root rel {why {}}} {
+    global pass fail
+    if {![catch {confined-file $root $rel} err]} {
+        puts "FAIL: $desc — served [file normalize $err]"; incr fail
+    } elseif {$why ne "" && ![string match $why $err]} {
+        puts "FAIL: $desc — refused as: $err"; incr fail
+    } else {
+        puts "pass: $desc ($err)"; incr pass
+    }
+}
+
+set tmp [file join [file dirname [file normalize [info script]]] .. .test-confine]
+set tmp [file normalize $tmp]
+file delete -force $tmp
+file mkdir [file join $tmp wt coverage]
+file mkdir [file join $tmp outside]
+set fd [open [file join $tmp wt coverage lcov.info] w]; puts $fd "SF:src/a.ts"; close $fd
+set fd [open [file join $tmp outside secret] w]; puts $fd "secret"; close $fd
+file link -symbolic [file join $tmp wt escape] [file join $tmp outside secret]
+file link -symbolic [file join $tmp wt escapedir] [file join $tmp outside]
+file link -symbolic [file join $tmp wt inside] [file join $tmp wt coverage lcov.info]
+
+set wt [file join $tmp wt]
+
+ok "serves a file inside the worktree" \
+    {[confined-file $wt coverage/lcov.info] eq [file join $wt coverage lcov.info]}
+ok "follows a symlink that stays inside the worktree" \
+    {[confined-file $wt inside] eq [file join $wt coverage lcov.info]}
+
+refused "rejects .. traversal"            $wt "../outside/secret"    "*must not traverse*"
+refused "rejects .. buried mid-path"      $wt "coverage/../../outside/secret" "*must not traverse*"
+refused "rejects a lone .."               $wt ".."                   "*must not traverse*"
+refused "rejects ."                       $wt "."                    "*must not traverse*"
+refused "rejects a ~ segment"             $wt "~/.ssh/id_ed25519"    "*must not traverse*"
+refused "rejects an absolute path"        $wt "/etc/passwd"          "*must be relative*"
+refused "rejects an empty path"           $wt ""                     "*empty path*"
+refused "rejects a symlink out of the worktree" $wt "escape"         "*escapes the job worktree*"
+refused "rejects a file under a symlinked-out directory" $wt "escapedir/secret" "*escapes the job worktree*"
+refused "rejects a missing file"          $wt "coverage/nope.info"   "*not a file*"
+refused "rejects a directory"             $wt "coverage"             "*not a file*"
+
+file delete -force $tmp
+
+puts ""
+puts "$pass passed, $fail failed"
+exit [expr {$fail == 0 ? 0 : 1}]

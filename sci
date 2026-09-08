@@ -98,7 +98,7 @@ load_conf() {
             # shellcheck disable=SC1090
             [[ -f "$f" ]] && { source "$f"; loaded=1; }
         done
-        # shellcheck disable=SC1090
+        # shellcheck disable=SC1090,SC1091
         [[ $loaded -eq 0 && -f "$SCRIPT_DIR/simple-ci.conf" ]] &&
             { source "$SCRIPT_DIR/simple-ci.conf"; loaded=1; }
     fi
@@ -176,6 +176,24 @@ Usage: sci clean [-s STATUS] [-a] [-n] [-k COUNT]
   -k COUNT    keep the most recent COUNT matched jobs
 EOF
             ;;
+        artifact) cat <<'EOF'
+Usage: sci artifact JOB-ID PATH
+
+  Print a file the job produced, named by a path relative to that job's
+  worktree, e.g. `sci artifact 1a2b coverage/lcov.info`. Exits non-zero if
+  the job, its worktree, or the file is gone — the server refuses any path
+  that leaves the worktree.
+EOF
+            ;;
+        baseline) cat <<'EOF'
+Usage: sci baseline REPO
+
+  Print the repo's full-run e2e coverage baseline as JSON:
+  {"repo":…, "tree":…, "lcov":…}. `tree` is the source tree the baseline was
+  measured against, empty when ci/e2e-map could not record one. Exits
+  non-zero when the repo has no baseline yet.
+EOF
+            ;;
         *) cat <<'EOF'
 sci — simple-ci client
 
@@ -188,6 +206,10 @@ Commands:
   log    JOB-ID                                   print the full raw job log
   kill   JOB-ID                                   kill a running job
   clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
+  artifact JOB-ID PATH                            print a file from the job's worktree
+  baseline REPO                                   print a repo's e2e coverage baseline as JSON
+  host                                            print the resolved push host
+  path   JOB-ID                                   print a job's worktree path on the host
   help   [COMMAND]                                show help
 
 Run 'sci help <command>' for details.
@@ -556,6 +578,24 @@ cmd_log() {
     "${CURL[@]}" "$CI_SERVER_URL/log/$1"
 }
 
+# ── artifact ──────────────────────────────────────────────────────────────────
+# Files a job produced, served by the CI server — which runs as the user that
+# owns the worktrees, so no shell login on the host is involved.
+cmd_artifact() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+    if [[ $# -ne 2 ]]; then cmd_help artifact >&2; exit 1; fi
+    "${CURL[@]}" "$CI_SERVER_URL/artifact/$1/$2"
+}
+
+# ── baseline ──────────────────────────────────────────────────────────────────
+cmd_baseline() {
+    load_conf
+    : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
+    if [[ $# -ne 1 ]]; then cmd_help baseline >&2; exit 1; fi
+    "${CURL[@]}" "$CI_SERVER_URL/baseline/$1"
+}
+
 # ── path ──────────────────────────────────────────────────────────────────────
 cmd_path() {
     load_conf
@@ -587,6 +627,8 @@ case "$cmd" in
     log)              cmd_log   "$@" ;;
     kill)             cmd_kill  "$@" ;;
     clean)            cmd_clean "$@" ;;
+    artifact)         cmd_artifact "$@" ;;
+    baseline)         cmd_baseline "$@" ;;
     host)             cmd_host  "$@" ;;
     path)             cmd_path  "$@" ;;
     help|-h|--help)   cmd_help  "$@" ;;

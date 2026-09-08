@@ -114,15 +114,17 @@ npm run test:run
 
 | File | Role |
 |---|---|
-| `ci-server.tcl` | Wapp HTTP server; dispatches jobs, serves status and logs |
+| `ci-server.tcl` | Wapp HTTP server; dispatches jobs, serves status, logs and artifacts |
+| `artifact-path.tcl` | Confines a requested artifact path to the job's own worktree |
 | `ci-run.sh` | Per-job runner spawned by the server; acquires flock, executes `ci/<script>`, writes final status |
 | `ci-rsync.sh` | Rsync server-side wrapper; creates worktree, writes queued status file, prints job ID |
-| `sci` | Client CLI: `push`, `wait`, `stat`, `kill`, `clean` subcommands |
+| `sci` | Client CLI: `push`, `wait`, `stat`, `kill`, `clean`, `artifact`, `baseline` subcommands |
 | `ci-setup.sh` | One-time build-host initialisation (directories, symlinks) |
 | `wapp/` | Tcl web framework (git submodule → jbroll/wapp) |
 | `simple-ci.conf` | Default configuration template |
 | `ci/smoke` | HTTP API smoke tests; run after deployments |
 | `ci/lint` | shellcheck for all shell scripts |
+| `ci/unit` | Tcl unit tests for artifact path confinement |
 
 ## Setup
 
@@ -183,6 +185,7 @@ Configuration is sourced as shell variables in order; first file found wins:
 | `CI_WORKTREE_TTL` | server | Seconds before a *passing* job's worktree is reclaimed (default: 900; 0 keeps it for `CI_JOB_TTL`) |
 | `CI_WORKTREES` | server, `ci-run.sh`, `ci-rsync.sh` | Root for per-job worktrees; must be identical for all three |
 | `CI_JOB_TIMEOUT` | `ci-run.sh` | Max job runtime in seconds (default: 3600) |
+| `CI_FLAKE` | server | Directory holding cross-job state, including the e2e coverage baseline `GET /baseline/:repo` serves (default: `$HOME/ci-flake`) |
 | `CI_HOSTS` | `sci` (all) | Ordered array of hosts to try; first reachable wins (see below) |
 
 ### Multi-host failover (`CI_HOSTS`)
@@ -221,6 +224,8 @@ sci <command> [options]
   wait   JOB-ID                                   wait for job, print log
   kill   JOB-ID                                   kill a running job
   clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
+  artifact JOB-ID PATH                            print a file from the job's worktree
+  baseline REPO                                   print a repo's e2e coverage baseline as JSON
   help   [COMMAND]                                show help
 ```
 
@@ -251,6 +256,16 @@ sci stat -s running
 ```bash
 sci kill <JOB-ID>    # full or 4+ char prefix
 ```
+
+### Collect a job's output
+
+```bash
+sci artifact <JOB-ID> coverage/lcov.info > coverage/lcov.info
+sci baseline myrepo | jq -r .lcov > coverage/e2e-fullrun/lcov.info
+```
+
+Both exit non-zero when the file is not there, so a caller cannot mistake a
+failed fetch for stale data it already had.
 
 ### npm script integration
 
@@ -285,10 +300,29 @@ The server exposes a self-describing schema at `GET /` in MCP tool format.
 | `POST` | `/job/:id/kill` | Send SIGTERM to a running job; marks status `killed` |
 | `DELETE` | `/job/:id` | Remove status and log files (non-running jobs only) |
 | `GET` | `/log/:id` | Full stdout+stderr log |
+| `GET` | `/artifact/:id/:path` | A file the job produced, by path relative to its worktree |
+| `GET` | `/baseline/:repo` | The repo's full-run e2e coverage baseline: `{"repo":…,"tree":…,"lcov":…}` |
 | `GET` | `/jobs` | All jobs, newest first |
 | `GET` | `/health` | `{"status":"ok","service":"simple-ci"}` |
 
 `:id` accepts a full 16-char hex job ID or any unique prefix of at least 4 chars.
+
+### Artifacts
+
+The server runs as the user that owns the job worktrees, so it is the only thing
+that needs to read them — a client never logs into the build host to collect
+coverage or build output.
+
+`:path` is client input, so `/artifact` confines it to that one job's worktree:
+it must be relative, no segment may be `.`, `..` or start with `~`, and the
+resolved file — symlinks followed, including a final one — must still sit under
+the worktree. Anything else is a 404 naming the reason. A job whose worktree has
+been reclaimed (see `CI_WORKTREE_TTL`) has no artifacts.
+
+`/baseline/:repo` serves the full-run e2e lcov `ci/e2e-map` persists in
+`CI_FLAKE`, together with the source tree it was measured against (`tree`, empty
+when none was recorded). The repo name is validated and the filename is fixed:
+this route reads nothing else out of `CI_FLAKE`.
 
 **Validation:** `repo` must exist in `ci-workspace`; `commit` must be 6–40 lowercase hex chars; `script` must match `^[a-zA-Z0-9_-]+$` (no colons or slashes).
 

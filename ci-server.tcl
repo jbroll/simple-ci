@@ -6,6 +6,7 @@ set script_dir [file dirname [file normalize [info script]]]
 
 source [file join $script_dir wapp wapp.tcl]
 source [file join $script_dir wapp wapp-routes.tcl]
+source [file join $script_dir artifact-path.tcl]
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 proc env-or {var default} {
@@ -19,6 +20,9 @@ set CI_WORKERS      [env-or CI_WORKERS 3]
 # Must match ci-run.sh / ci-rsync.sh — a divergent default would make
 # sweep-orphan-worktrees silently scan an empty directory.
 set CI_WORKTREES    [file normalize [env-or CI_WORKTREES /data/john/ci-worktrees]]
+# Must match ci/e2e-map's CI_FLAKE_E2E_FULLRUN dirname, where the full-run e2e
+# coverage baseline is persisted between jobs.
+set CI_FLAKE        [file normalize [env-or CI_FLAKE [file join $::env(HOME) ci-flake]]]
 
 # jbr Tcl modules (jbr::cron scheduling DSL) install as versioned .tm files under
 # ~/lib/tcl8/site-tcl via `make install` in the jbr.tcl repo. Register that on the
@@ -261,6 +265,44 @@ wapp-route GET /log/id {
     wapp [read-file $lf]
 }
 
+# GET /artifact/:id/<path> — a file from the job's own worktree
+wapp-route GET /artifact/id {
+    if {[catch {resolve-job-id $id} id]} {
+        json-err "404 Not Found" $id; return
+    }
+    set data [read-file [status-file $id]]
+    if {![regexp {"worktree":"([^"]+)"} $data -> worktree]} {
+        json-err "404 Not Found" "job has no worktree: $id"
+        return
+    }
+    if {[catch {confined-file $worktree [join $PATH_TAIL /]} path]} {
+        json-err "404 Not Found" $path
+        return
+    }
+    wapp-mimetype "text/plain; charset=utf-8"
+    wapp [read-file $path]
+}
+
+# GET /baseline/:repo — the full-run e2e coverage baseline ci/e2e-map persists
+# outside any job worktree, with the source tree it was measured against. Only
+# this one pair of files is servable; the path is never client-supplied.
+wapp-route GET /baseline/repo {
+    global CI_FLAKE
+    if {![regexp {^[a-zA-Z0-9_-]+$} $repo]} {
+        json-err "400 Bad Request" "invalid repo name: $repo"
+        return
+    }
+    set lcov [file join $CI_FLAKE "${repo}-e2e-fullrun.lcov"]
+    if {![file isfile $lcov]} {
+        json-err "404 Not Found" "no e2e baseline for $repo (run ci/e2e-map)"
+        return
+    }
+    set sha [file join $CI_FLAKE "${repo}-e2e-fullrun.sha"]
+    set tree ""
+    if {[file isfile $sha]} { set tree [string trim [read-file $sha]] }
+    json-ok "{\"repo\":\"[json-str $repo]\",\"tree\":\"[json-str $tree]\",\"lcov\":\"[json-str [read-file $lcov]]\"}"
+}
+
 # GET /jobs  — all jobs, newest-file-first
 wapp-route GET /jobs {
     global CI_LOGS
@@ -326,6 +368,31 @@ proc wapp-default {} {
           "required": ["id"]
         },
         "http": {"method": "GET", "path": "/log/{id}"}
+      },
+      {
+        "name": "get_artifact",
+        "description": "Fetch a file produced by a job, by path relative to that job's worktree.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id":   {"type": "string", "description": "Job id"},
+            "path": {"type": "string", "description": "Path relative to the job worktree, e.g. coverage/lcov.info"}
+          },
+          "required": ["id", "path"]
+        },
+        "http": {"method": "GET", "path": "/artifact/{id}/{path}"}
+      },
+      {
+        "name": "get_baseline",
+        "description": "Fetch a repo's full-run e2e coverage baseline: {repo, tree, lcov}.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo": {"type": "string", "description": "Repo name"}
+          },
+          "required": ["repo"]
+        },
+        "http": {"method": "GET", "path": "/baseline/{repo}"}
       },
       {
         "name": "list_jobs",

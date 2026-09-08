@@ -184,8 +184,6 @@ Configuration is sourced as shell variables in order; first file found wins:
 | `CI_WORKTREES` | server, `ci-run.sh`, `ci-rsync.sh` | Root for per-job worktrees; must be identical for all three |
 | `CI_JOB_TIMEOUT` | `ci-run.sh` | Max job runtime in seconds (default: 3600) |
 | `CI_HOSTS` | `sci` (all) | Ordered array of hosts to try; first reachable wins (see below) |
-| `CI_READ_HOSTS` | `sci readhost` | Array parallel to `CI_HOSTS`: the login used to copy build artifacts back (see below) |
-| `CI_READ_HOST` | `sci readhost` | Artifact-read login when `CI_HOSTS` is not defined or the resolved entry has no parallel `CI_READ_HOSTS` entry |
 
 ### Multi-host failover (`CI_HOSTS`)
 
@@ -199,29 +197,6 @@ CI_HOSTS=(
 ```
 
 Tunnel processes are long-lived and reused across `sci` invocations. `CI_HOST`, `CI_REMOTE_SCRIPT`, and `CI_SERVER_URL` should still be set as fallbacks for when `CI_HOSTS` is not defined or no host is reachable.
-
-### Reading artifacts back (`CI_READ_HOSTS`)
-
-`sci push` authenticates as the CI service user, whose key is forced to `ci-rsync.sh`
-and can run nothing else — so it cannot serve `scp`/`sftp` and cannot be used to copy
-a job's coverage or build output back. `CI_READ_HOSTS` names a shell-capable login for
-that, one entry per `CI_HOSTS` entry and in the same order, so the read login matches
-the route that actually resolved:
-
-```bash
-CI_HOSTS=(
-    "s-ci@buildhost:http://buildhost:8080"
-    "ci-remote:tunnel:8080"
-)
-CI_READ_HOSTS=(
-    "buildhost"                 # on the LAN
-    "buildhost.example.com"     # off it
-)
-```
-
-`sci readhost` prints the entry for the resolved route and fails if there is none.
-Deriving it by stripping the `user@` from `CI_HOST` does not work: an entry may be an
-SSH alias bound to the CI-only key, whose name says nothing about the shell login.
 
 **Example project config** (`./ci/simple-ci.conf`):
 

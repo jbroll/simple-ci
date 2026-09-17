@@ -472,11 +472,20 @@ proc dispatch-jobs {} {
 }
 
 # ── Zombie / expiry maintenance (runs independently of dispatch) ───────────────
-set CI_JOB_TTL [env-or CI_JOB_TTL 7200]
+# Status and log files are small, so they outlive the worktrees by a wide margin.
+set CI_JOB_TTL [env-or CI_JOB_TTL 604800]
 # Worktrees are large; reclaim them well before the status/log history. The
 # pre-commit hook scp's lcov out of the worktree within seconds of completion,
 # so a 15-minute grace is safe. Set 0 to keep worktrees for the full CI_JOB_TTL.
 set CI_WORKTREE_TTL [env-or CI_WORKTREE_TTL 900]
+# A job that did not pass keeps its worktree (traces, screenshots) long enough
+# to debug. Set 0 to keep it for the full CI_JOB_TTL.
+set CI_FAILED_WORKTREE_TTL [env-or CI_FAILED_WORKTREE_TTL 86400]
+
+proc effective-ttl {ttl} {
+    global CI_JOB_TTL
+    expr {$ttl > 0 ? min($ttl, $CI_JOB_TTL) : $CI_JOB_TTL}
+}
 # Grace before a "running" job whose lock isn't held YET is reaped as stale.
 # dispatch-jobs marks a job "running" and THEN launches ci-run.sh (setsid &),
 # which acquires its flock a moment later. An expire sweep firing in that startup
@@ -513,7 +522,7 @@ proc remove-job-worktree {data} {
 }
 
 proc expire-old-jobs {} {
-    global CI_LOGS CI_JOB_TTL CI_WORKTREE_TTL CI_RUNNING_GRACE
+    global CI_LOGS CI_JOB_TTL CI_WORKTREE_TTL CI_FAILED_WORKTREE_TTL CI_RUNNING_GRACE
     if {$CI_JOB_TTL <= 0} return
     foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
         if {[catch {
@@ -553,14 +562,13 @@ proc expire-old-jobs {} {
             } else {
                 set age [expr {[clock seconds] - [parse-iso-time $ts]}]
             }
-            # Reclaim the large worktree after a short grace — but ONLY for jobs
-            # that PASSED. A failed job is the one you debug, and its trace,
-            # screenshots, and auth/test state live in the worktree; reclaiming
-            # those early makes failures uninvestigable. Keep a failed job's
-            # worktree for the full CI_JOB_TTL (like its status/log); passing
-            # jobs' worktrees are large and unneeded, so still go at CI_WORKTREE_TTL.
-            if {$CI_WORKTREE_TTL > 0 && $age >= $CI_WORKTREE_TTL
-                    && [regexp {"status":"pass"} $data]} {
+            # A failed job is the one you debug, so its worktree gets the longer grace.
+            if {[regexp {"status":"pass"} $data]} {
+                set worktree_ttl [effective-ttl $CI_WORKTREE_TTL]
+            } else {
+                set worktree_ttl [effective-ttl $CI_FAILED_WORKTREE_TTL]
+            }
+            if {$age >= $worktree_ttl} {
                 remove-job-worktree $data
             }
             if {$age < $CI_JOB_TTL} continue
@@ -584,11 +592,12 @@ proc expire-old-jobs {} {
 # itself, restricted to the <repo>-<16 hex id> name ci-run.sh/ci-rsync.sh
 # create: the root also holds dependency symlinks (see ci-setup.sh) that must
 # survive, and anything hand-placed there is not ours to delete. Gated on
-# CI_JOB_TTL because ci-rsync.sh creates the directory and then rsyncs for
-# minutes before writing the status file.
+# the failed-job worktree TTL because ci-rsync.sh creates the directory and
+# then rsyncs for minutes before writing the status file.
 proc sweep-orphan-worktrees {} {
-    global CI_WORKTREES CI_WORKSPACE CI_JOB_TTL
+    global CI_WORKTREES CI_WORKSPACE CI_JOB_TTL CI_FAILED_WORKTREE_TTL
     if {$CI_JOB_TTL <= 0} return
+    set orphan_ttl [effective-ttl $CI_FAILED_WORKTREE_TTL]
     foreach dir [glob -nocomplain -type d -directory $CI_WORKTREES *] {
         if {[file type $dir] eq "link"} continue
         if {![regexp {^(.+)-([0-9a-f]{16})$} [file tail $dir] -> repo id]} continue
@@ -601,7 +610,7 @@ proc sweep-orphan-worktrees {} {
         if {[file isdirectory $admin] && [file mtime $admin] > $born} {
             set born [file mtime $admin]
         }
-        if {[clock seconds] - $born < $CI_JOB_TTL} continue
+        if {[clock seconds] - $born < $orphan_ttl} continue
         catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $dir}
         if {[catch {file delete -force $dir} err]} {
             puts stderr "sweep-orphan-worktrees: [file tail $dir]: $err"

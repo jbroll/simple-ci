@@ -80,11 +80,21 @@ if curl -s "$URL/log/$id" | grep -q '^ok$'; then ok "pass job log captured"; els
 read -r st ex id <<<"$(run_job demo "$COMMIT" bad)"
 if [[ "$st" == fail && "$ex" == 3 ]]; then ok "fail job lifecycle (exit propagated)"; else no "fail job" "status=$st exit=$ex"; fi
 
-# Orphan-worktree sweep. Its own server + paths: the assertions above depend on
-# status files surviving, and this needs directories aged past CI_JOB_TTL.
+# Worktree expiry and orphan sweep. Its own server + paths: the assertions above
+# depend on status files surviving, and this needs entries aged past the TTLs.
 SWEEP="$WORK/sweep"
 mkdir -p "$SWEEP/logs" "$SWEEP/ws" "$SWEEP/wt" "$SWEEP/dep"
-OLD=$(date -d '2 hours ago' '+%Y%m%d%H%M')
+OLD=$(date -d '4 hours ago' '+%Y%m%d%H%M')
+TWO_H=$(date -u -d '2 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+FOUR_H=$(date -u -d '4 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+finished_job() {   # id status finished — status file whose worktree exists
+    mkdir -p "$SWEEP/wt/demo-$1"
+    printf '{"id":"%s","repo":"demo","status":"%s","finished":"%s","worktree":"%s"}\n' \
+        "$1" "$2" "$3" "$SWEEP/wt/demo-$1" > "$SWEEP/logs/$1.status"
+}
+finished_job aaaaaaaaaaaaaaaa pass "$TWO_H"   # past pass TTL      → worktree removed
+finished_job bbbbbbbbbbbbbbbb fail "$TWO_H"   # within failed TTL  → worktree kept
+finished_job cccccccccccccccc fail "$FOUR_H"  # past failed TTL    → worktree removed
 mkdir -p "$SWEEP/wt/demo-0123456789abcdef"   # orphan, aged  → swept
 mkdir -p "$SWEEP/wt/demo-fedcba9876543210"   # has a status  → kept
 mkdir -p "$SWEEP/wt/demo-1111111111111111"   # orphan, fresh → kept
@@ -100,7 +110,7 @@ touch -t "$OLD" "$SWEEP/wt/demo-0123456789abcdef" "$SWEEP/wt/demo-nothex" "$SWEE
 SPORT=$(( PORT + 100 ))
 while ss -tln "sport = :$SPORT" 2>/dev/null | grep -q ":$SPORT"; do SPORT=$(( SPORT + 1 )); done
 env HOME="$WORK" CI_LOGS="$SWEEP/logs" CI_WORKSPACE="$SWEEP/ws" CI_WORKTREES="$SWEEP/wt" \
-    tclsh "$REPO/ci-server.tcl" -server "127.0.0.1:$SPORT" >"$WORK/sweep.log" 2>&1 &
+    CI_WORKTREE_TTL=900 CI_FAILED_WORKTREE_TTL=10800 tclsh "$REPO/ci-server.tcl" -server "127.0.0.1:$SPORT" >"$WORK/sweep.log" 2>&1 &
 SWEEP_SRV=$!
 for _ in $(seq 1 40); do
     [[ -d "$SWEEP/wt/demo-0123456789abcdef" ]] || break
@@ -112,6 +122,16 @@ if [[ ! -d "$SWEEP/wt/demo-0123456789abcdef" ]]; then ok "sweep removes aged orp
 else no "sweep removes aged orphan worktree" "$(cat "$WORK/sweep.log")"; fi
 for keep in demo-fedcba9876543210 demo-1111111111111111 demo-2222222222222222 demo-nothex handplaced deplink; do
     if [[ -e "$SWEEP/wt/$keep" ]]; then ok "sweep keeps $keep"; else no "sweep keeps $keep"; fi
+done
+for gone in aaaaaaaaaaaaaaaa cccccccccccccccc; do
+    if [[ ! -e "$SWEEP/wt/demo-$gone" ]]; then ok "expiry removes worktree $gone"
+    else no "expiry removes worktree $gone"; fi
+done
+if [[ -e "$SWEEP/wt/demo-bbbbbbbbbbbbbbbb" ]]; then ok "expiry keeps recent failed worktree"
+else no "expiry keeps recent failed worktree"; fi
+for id in aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccccccccccc; do
+    if [[ -e "$SWEEP/logs/$id.status" ]]; then ok "expiry keeps status $id"
+    else no "expiry keeps status $id"; fi
 done
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

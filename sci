@@ -449,12 +449,28 @@ cmd_wait() {
     printf 'sci: waiting for job %s' "$id" >&2
 
     while true; do
-        local resp state
-        resp=$("${CURL[@]}" "$CI_SERVER_URL/job/$id" 2>/dev/null) || {
+        local resp code state
+        # No -f: a 404 must be told apart from a server that cannot be reached.
+        resp=$(curl -s --connect-timeout 5 --max-time 30 -w '\n%{http_code}' \
+               "$CI_SERVER_URL/job/$id" 2>/dev/null) || {
             printf '\nsci: server unreachable, retrying...\n' >&2
             sleep "$interval"
             continue
         }
+        code=${resp##*$'\n'}
+        resp=${resp%$'\n'*}
+        case "$code" in
+            200) ;;
+            404)
+                printf '\nsci: job %s not found (expired or never existed)\n' "$id" >&2
+                exit 2
+                ;;
+            *)
+                printf '\nsci: server returned HTTP %s, retrying...\n' "$code" >&2
+                sleep "$interval"
+                continue
+                ;;
+        esac
         state=$(printf '%s' "$resp" | jq -r '.status')
         case "$state" in
             queued)

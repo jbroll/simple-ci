@@ -63,7 +63,7 @@ Up to `CI_WORKERS` (default 3) `ci-run.sh` processes run concurrently. Each is i
 
 Each job runs in a dedicated git worktree under `$CI_WORKTREES/<repo>-<id>/`. The worktree is kept after the job completes so artifacts can be retrieved, and is removed when the job is deleted via `sci clean` (or immediately on kill). The runner executes `ci/<script>` from the repo's worktree — each repo owns its own setup, dependency installation, and test invocation inside that script.
 
-Passing jobs' worktrees are reclaimed at `CI_WORKTREE_TTL`; a failed job keeps its worktree for the full `CI_JOB_TTL`, since its traces and screenshots are what you debug. That cleanup walks status files, so a worktree whose status file is already gone would never be reclaimed — `sweep-orphan-worktrees` scans `$CI_WORKTREES` directly for that case. It only removes `<repo>-<16 hex id>` directories older than `CI_JOB_TTL` with no status file, leaving symlinks and any other name alone: the same directory holds the dependency symlinks `ci-setup.sh` creates.
+Status and log files are kept for `CI_JOB_TTL` (7 days). Worktrees go much sooner: a passing job's at `CI_WORKTREE_TTL`, any other job's at `CI_FAILED_WORKTREE_TTL` (24 hours), since a failed job's traces and screenshots are what you debug. That cleanup walks status files, so a worktree whose status file is already gone would never be reclaimed. `sweep-orphan-worktrees` scans `$CI_WORKTREES` directly for that case. It only removes `<repo>-<16 hex id>` directories older than `CI_FAILED_WORKTREE_TTL` with no status file, leaving symlinks and any other name alone: the same directory holds the dependency symlinks `ci-setup.sh` creates.
 
 ## CI script convention
 
@@ -181,8 +181,9 @@ Configuration is sourced as shell variables in order; first file found wins:
 | `CI_WORKERS` | server | Max concurrent jobs (default: 3) |
 | `CI_ALLOWED_NETS` | server | Space-separated IP prefixes allowed to reach the server; empty means allow all |
 | `CI_WAIT_INTERVAL` | `sci wait` | Poll interval in seconds (default: 5) |
-| `CI_JOB_TTL` | server | Seconds before finished jobs are expired (default: 7200) |
+| `CI_JOB_TTL` | server | Seconds before a finished job's status and log are deleted (default: 604800) |
 | `CI_WORKTREE_TTL` | server | Seconds before a *passing* job's worktree is reclaimed (default: 900; 0 keeps it for `CI_JOB_TTL`) |
+| `CI_FAILED_WORKTREE_TTL` | server | Seconds before any other job's worktree, or an orphaned worktree, is reclaimed (default: 86400; 0 keeps it for `CI_JOB_TTL`) |
 | `CI_WORKTREES` | server, `ci-run.sh`, `ci-rsync.sh` | Root for per-job worktrees; must be identical for all three |
 | `CI_JOB_TIMEOUT` | `ci-run.sh` | Max job runtime in seconds (default: 3600) |
 | `CI_FLAKE` | server | Directory holding cross-job state, including the e2e coverage baseline `GET /baseline/:repo` serves (default: `$HOME/ci-flake`) |

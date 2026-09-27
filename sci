@@ -380,13 +380,16 @@ cmd_push() {
     # base and CI tests code you don't have. --exclude=.git and the .gitignore filter also protect
     # those paths from deletion (excluded paths are never deleted), so .git and gitignored build
     # artifacts (node_modules, dist) are left intact.
-    # The tag travels as a #suffix on the destination path (ci-rsync.sh strips
+    # The tag travels as a +suffix on the destination path (ci-rsync.sh strips
     # it before creating the worktree). --rsync-path must stay exactly
     # $CI_REMOTE_SCRIPT: pushes land on a restricted key forced to that command.
+    # '+' is the separator because every other field's charset excludes it and
+    # rsync/ssh pass it through unescaped (a '#' suffix arrives backslash-
+    # escaped by the remote-shell quoting layers).
     # shellcheck disable=SC2086
     rsync --rsync-path="$CI_REMOTE_SCRIPT" \
         -a --delete ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
-        . "$CI_HOST:$script_arg${tag:+#$tag}" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
+        . "$CI_HOST:$script_arg${tag:++$tag}" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
 
     cat "$tmp" >&2
 

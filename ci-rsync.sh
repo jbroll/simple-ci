@@ -60,15 +60,18 @@ dest="${args[$last]}"
 dest="${dest#/}"
 dest="${dest%/}"
 
-# Optional human tag: REPO/.../SCRIPT[#tag] or .../SCRIPT:SELECTOR#tag, sent by
+# Optional human tag: REPO/.../SCRIPT[+tag] or .../SCRIPT:SELECTOR+tag, sent by
 # `sci push --tag`. Strip FIRST, before the selector split and path parse —
 # otherwise the tag pollutes the script name. Stored on the status file, shown
-# by `sci stat`, resolvable anywhere a job ID works while unique. CI_TAG (env)
-# remains as a fallback for non-sci invocations.
+# by `sci stat`, resolvable anywhere a job ID works while unique. '+' is the
+# separator: no other field's charset contains it, and rsync/ssh pass it
+# through unescaped (a '#' suffix arrives backslash-escaped by the
+# remote-shell quoting layers). CI_TAG (env) remains as a fallback for
+# non-sci invocations.
 TAG="${CI_TAG:-}"
-if [[ "$dest" == *#* ]]; then
-    TAG="${dest##*#}"
-    dest="${dest%%#*}"
+if [[ "$dest" == *+* ]]; then
+    TAG="${dest##*+}"
+    dest="${dest%%+*}"
 fi
 
 # Optional test selector:  REPO/SUBDIR/SCRIPT:SELECTOR

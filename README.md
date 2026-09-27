@@ -221,16 +221,18 @@ CI_SERVER_URL=http://buildhost:8080
 sci <command> [options]
 
   stat   [-w [INTERVAL]] [-n COUNT] [-s STATUS]   show job status table
-  push   REPO[/SUBDIR]/SCRIPT                     submit a job via rsync
-  wait   JOB-ID                                   wait for job, print log
-  kill   JOB-ID                                   kill a running job
+  push   REPO[/SUBDIR]/SCRIPT [-t TAG]            submit a job via rsync
+  wait   JOB-ID|TAG                              wait for job, print log
+  kill   JOB-ID|TAG                              kill a running job
   clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
-  artifact JOB-ID PATH                            print a file from the job's worktree
+  artifact JOB-ID|TAG PATH                       print a file from the job's worktree
   baseline REPO                                   print a repo's e2e coverage baseline as JSON
   help   [COMMAND]                                show help
 ```
 
-Job IDs may be given as a prefix of at least 4 hex characters, as long as they uniquely identify a job. The 8-char prefix shown by `sci stat` always works.
+Job IDs may be given as a prefix of at least 4 hex characters, as long as they uniquely identify a job. The 8-char prefix shown by `sci stat` always works. A pusher-supplied `--tag` (`^[a-zA-Z0-9._-]{1,64}$`) works anywhere a job ID does, while exactly one live job carries it — tags are human handles, not unique keys, so reusing one while the old job still exists makes the ref ambiguous until one side is cleaned.
+
+`sci stat` shows BASE, not the tested commit: for `sci push` jobs BASE is the `origin/HEAD` worktree base and the tested tree is BASE plus the pusher's local working tree overlaid. Only HTTP-path jobs test exactly the listed commit.
 
 ### Submit a job and wait
 
@@ -239,6 +241,10 @@ Job IDs may be given as a prefix of at least 4 hex characters, as long as they u
 JOB=$(sci push myrepo/test)
 sci wait "$JOB"
 # Log streams to stdout on completion; exits 0/1 for pass/fail
+
+# With a human handle for later refs:
+JOB=$(sci push myrepo/test --tag wicket-412)
+sci wait wicket-412
 ```
 
 `sci push` prints server messages to stderr and the bare job ID to stdout, so `$()` capture works cleanly.
@@ -296,7 +302,7 @@ The server exposes a self-describing schema at `GET /` in MCP tool format.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/job` | Submit a job. Body: `{"repo":"name","commit":"abc123","script":"test","subdir":"optional/path"}` |
+| `POST` | `/job` | Submit a job. Body: `{"repo":"name","commit":"abc123","script":"test","subdir":"optional/path","tag":"optional-handle"}` |
 | `GET` | `/job/:id` | Job status object |
 | `POST` | `/job/:id/kill` | Send SIGTERM to a running job; marks status `killed` |
 | `DELETE` | `/job/:id` | Remove status and log files (non-running jobs only) |
@@ -306,7 +312,7 @@ The server exposes a self-describing schema at `GET /` in MCP tool format.
 | `GET` | `/jobs` | All jobs, newest first |
 | `GET` | `/health` | `{"status":"ok","service":"simple-ci"}` |
 
-`:id` accepts a full 16-char hex job ID or any unique prefix of at least 4 chars.
+`:id` accepts a full 16-char hex job ID, any unique prefix of at least 4 chars, or a unique tag.
 
 ### Artifacts
 
@@ -325,9 +331,9 @@ been reclaimed (see `CI_WORKTREE_TTL`) has no artifacts.
 when none was recorded). The repo name is validated and the filename is fixed:
 this route reads nothing else out of `CI_FLAKE`.
 
-**Validation:** `repo` must exist in `ci-workspace`; `commit` must be 6–40 lowercase hex chars; `script` must match `^[a-zA-Z0-9_-]+$` (no colons or slashes).
+**Validation:** `repo` must exist in `ci-workspace`; `commit` must be 6–40 lowercase hex chars; `script` must match `^[a-zA-Z0-9_-]+$` (no colons or slashes); `tag` (optional) must match `^[a-zA-Z0-9._-]{1,64}$`.
 
-**Status object fields:** `id`, `status`, `repo`, `commit`, `script`, `subdir` (if set), `started` (ISO 8601), `finished` (ISO 8601), `exit` (integer, when complete).
+**Status object fields:** `id`, `status`, `repo`, `commit` (BASE for rsync pushes, exact commit for HTTP/scheduled jobs), `script`, `subdir` (if set), `tag` (if set), `started` (ISO 8601), `finished` (ISO 8601), `exit` (integer, when complete).
 
 **Status values:** `queued`, `running`, `pass`, `fail`, `killed`, `stale` (running job whose worker exited without updating status).
 

@@ -124,10 +124,15 @@ Usage: sci stat [-w [INTERVAL]] [-n COUNT] [-s STATUS]
 EOF
             ;;
         push) cat <<'EOF'
-Usage: sci push REPO[/SUBDIR]/SCRIPT
+Usage: sci push REPO[/SUBDIR]/SCRIPT [-t TAG|--tag TAG]
 
   Rsync the current directory to the CI server and queue a job.
+  BASE is origin/HEAD; the tested tree is BASE plus your local working
+  tree overlaid, so BASE is not the tested commit.
   Prints the job ID to stdout.
+
+  -t TAG    human tag for this job (^[a-zA-Z0-9._-]{1,64}$). Shown by
+            sci stat and usable anywhere a job ID works while unique.
 
   Refuses if another job from the same client session (worktree-path +
   script-arg) is still queued or running, to prevent duplicate work from
@@ -139,7 +144,7 @@ Usage: sci push REPO[/SUBDIR]/SCRIPT
 EOF
             ;;
         wait) cat <<'EOF'
-Usage: sci wait JOB-ID
+Usage: sci wait JOB-ID|TAG
 
   Wait for a job to finish, then print a SUMMARY to stdout:
     pass  → one line (the runner's "N passed" summary).
@@ -153,14 +158,14 @@ Usage: sci wait JOB-ID
 EOF
             ;;
         log) cat <<'EOF'
-Usage: sci log JOB-ID
+Usage: sci log JOB-ID|TAG
 
   Print the complete raw job log (unfiltered). `sci wait` summarizes; use
   this when you need the full output.
 EOF
             ;;
         kill) cat <<'EOF'
-Usage: sci kill JOB-ID
+Usage: sci kill JOB-ID|TAG
 
   Send SIGTERM to a running job and mark it killed.
 EOF
@@ -177,7 +182,7 @@ Usage: sci clean [-s STATUS] [-a] [-n] [-k COUNT]
 EOF
             ;;
         artifact) cat <<'EOF'
-Usage: sci artifact JOB-ID PATH
+Usage: sci artifact JOB-ID|TAG PATH
 
   Print a file the job produced, named by a path relative to that job's
   worktree, e.g. `sci artifact 1a2b coverage/lcov.info`. Exits non-zero if
@@ -201,10 +206,10 @@ Usage: sci <command> [options]
 
 Commands:
   stat   [-w [INTERVAL]] [-n COUNT] [-s STATUS]   show job status table
-  push   REPO[/SUBDIR]/SCRIPT                     submit a job via rsync
-  wait   JOB-ID                                   wait for job, print summary (pass: 1 line; fail: filtered extract)
-  log    JOB-ID                                   print the full raw job log
-  kill   JOB-ID                                   kill a running job
+  push   REPO[/SUBDIR]/SCRIPT [-t TAG]            submit a job via rsync
+  wait   JOB-ID|TAG                              wait for job, print summary (pass: 1 line; fail: filtered extract)
+  log    JOB-ID|TAG                              print the full raw job log
+  kill   JOB-ID|TAG                              kill a running job
   clean  [-s STATUS] [-a] [-n] [-k COUNT]         remove completed jobs
   artifact JOB-ID PATH                            print a file from the job's worktree
   baseline REPO                                   print a repo's e2e coverage baseline as JSON
@@ -252,8 +257,8 @@ cmd_stat() {
     local json
     json=$("${CURL[@]}" "$CI_SERVER_URL/jobs") || { echo "sci: server unreachable" >&2; exit 1; }
 
-    printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %s\n' "ID" "STATUS" "DURATION" "FINISHED" "REPO" "COMMIT" "SCRIPT"
-    printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %s\n' "--------" "-------" "--------" "--------" "--------------------" "--------" "------"
+    printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %-16s  %s\n' "ID" "STATUS" "DURATION" "FINISHED" "REPO" "BASE" "TAG" "SCRIPT"
+    printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %-16s  %s\n' "--------" "-------" "--------" "--------" "--------------------" "--------" "----------------" "------"
 
     printf '%s' "$json" | jq -r \
         --arg filter "$filter" --argjson count "$count" '
@@ -282,16 +287,17 @@ cmd_stat() {
           , (if .finished then (.finished + "Z" | fromdateiso8601 | strflocaltime("%H:%M:%S")) else "" end)
           , .repo
           , .commit[0:8]
+          , (.tag // "")
           , (if .subdir then .subdir + "/" else "" end) + .script
           ] | join("|")' \
-    | while IFS='|' read -r id status duration finished repo commit label; do
-        printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %s\n' "$id" "$status" "$duration" "$finished" "$repo" "$commit" "$label"
+    | while IFS='|' read -r id status duration finished repo commit tag label; do
+        printf '%-8s  %-7s  %-8s  %-8s  %-20s  %-8s  %-16s  %s\n' "$id" "$status" "$duration" "$finished" "$repo" "$commit" "$tag" "$label"
     done
 }
 
 # ── Session tracking ─────────────────────────────────────────────────────────
 # Refuse to push if another job from the same client session is still queued
-# or running. A "session" is identified by sha256(worktree-path|script-arg) so
+# or running. A "session" is identified by sha256(worktree-path|script-arg[|tag]) so
 # the same worktree pushing the same script twice gets blocked, but distinct
 # scripts (e.g. ci/test + ci/e2e-smoke) from the same worktree run in parallel,
 # and different worktrees pushing the same script also run in parallel.
@@ -312,12 +318,24 @@ cmd_push() {
     : "${CI_HOST:?CI_HOST must be set in simple-ci.conf}"
     : "${CI_REMOTE_SCRIPT:?CI_REMOTE_SCRIPT must be set in simple-ci.conf}"
 
-    if [[ $# -ne 1 ]]; then cmd_help push >&2; exit 1; fi
+    if [[ $# -lt 1 ]]; then cmd_help push >&2; exit 1; fi
 
-    local script_arg="$1"
+    local script_arg="$1"; shift
+    local tag=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t|--tag) tag="${2:?--tag requires a value}"; shift 2 ;;
+            -h|--help) cmd_help push; exit 0 ;;
+            *) echo "sci push: unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+    if [[ -n "$tag" && ! "$tag" =~ ^[a-zA-Z0-9._-]{1,64}$ ]]; then
+        echo "sci push: tag must match ^[a-zA-Z0-9._-]{1,64}\$: $tag" >&2
+        exit 1
+    fi
     local session_dir sha session_file lock_file
     session_dir=$(_session_dir)
-    sha=$(_session_sha "$script_arg")
+    sha=$(_session_sha "$script_arg${tag:+|$tag}")
     session_file="$session_dir/$sha.job"
     lock_file="$session_dir/$sha.lock"
 
@@ -362,10 +380,13 @@ cmd_push() {
     # base and CI tests code you don't have. --exclude=.git and the .gitignore filter also protect
     # those paths from deletion (excluded paths are never deleted), so .git and gitignored build
     # artifacts (node_modules, dist) are left intact.
+    # The tag travels as a #suffix on the destination path (ci-rsync.sh strips
+    # it before creating the worktree). --rsync-path must stay exactly
+    # $CI_REMOTE_SCRIPT: pushes land on a restricted key forced to that command.
     # shellcheck disable=SC2086
     rsync --rsync-path="$CI_REMOTE_SCRIPT" \
         -a --delete ${CI_RSYNC_ARGS:-} --filter=':- .gitignore' --exclude=.git \
-        . "$CI_HOST:$script_arg" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
+        . "$CI_HOST:$script_arg${tag:+#$tag}" 2>"$tmp" || { cat "$tmp" >&2; exit 1; }
 
     cat "$tmp" >&2
 
@@ -556,7 +577,7 @@ cmd_clean() {
           else . end
         | if $keep > 0 then .[$keep:] else . end
         | .[]
-        | [.id, .status, .repo] | join("|")')
+        | [.id, .status, .repo, (.tag // "")] | join("|")')
 
     if [[ -z "$matched" ]]; then
         echo "sci clean: nothing to clean"
@@ -568,17 +589,17 @@ cmd_clean() {
 
     if (( dry_run )); then
         echo "sci clean: would delete $count job(s):"
-        while IFS='|' read -r id status repo; do
-            printf '  %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo"
+        while IFS='|' read -r id status repo tag; do
+            printf '  %s  %-7s  %-20s  %s\n' "${id:0:8}" "$status" "$repo" "$tag"
         done <<< "$matched"
         exit 0
     fi
 
-    while IFS='|' read -r id status repo; do
+    while IFS='|' read -r id status repo tag; do
         if "${CURL[@]}" -X DELETE "$CI_SERVER_URL/job/$id" > /dev/null; then
-            printf 'deleted %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo"
+            printf 'deleted %s  %-7s  %-20s  %s\n' "${id:0:8}" "$status" "$repo" "$tag"
         else
-            printf 'FAILED  %s  %-7s  %s\n' "${id:0:8}" "$status" "$repo" >&2
+            printf 'FAILED  %s  %-7s  %-20s  %s\n' "${id:0:8}" "$status" "$repo" "$tag" >&2
         fi
     done <<< "$matched"
 
@@ -618,7 +639,7 @@ cmd_path() {
     : "${CI_SERVER_URL:?CI_SERVER_URL must be set in simple-ci.conf}"
 
     if [[ $# -ne 1 ]]; then
-        echo "Usage: sci path JOB-ID" >&2
+        echo "Usage: sci path JOB-ID|TAG" >&2
         echo "  Print the worktree path for a job (as recorded by the CI server)." >&2
         exit 1
     fi

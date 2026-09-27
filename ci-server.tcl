@@ -62,23 +62,39 @@ proc status-file {id} {
     return [file join $CI_LOGS "${id}.status"]
 }
 
-# Resolve a full or prefix job ID to the canonical full ID.
-# Accepts 4–16 lowercase hex chars; prefix must match exactly one job.
-proc resolve-job-id {prefix} {
+# Resolve a job reference to the canonical full ID. Accepts a 4–16 lowercase
+# hex ID prefix (must match exactly one job) or a pusher-supplied tag (exact
+# match, must match exactly one job while it exists). ID matches win over tags.
+proc resolve-job-id {ref} {
     global CI_LOGS
-    if {![regexp {^[0-9a-f]{4,16}$} $prefix]} {
-        return -code error "invalid job id: $prefix"
-    }
-    if {[string length $prefix] == 16} {
-        if {![file exists [file join $CI_LOGS "${prefix}.status"]]} {
-            return -code error "job not found: $prefix"
+    if {[regexp {^[0-9a-f]{4,16}$} $ref]} {
+        if {[string length $ref] == 16} {
+            if {![file exists [file join $CI_LOGS "${ref}.status"]]} {
+                return -code error "job not found: $ref"
+            }
+            return $ref
         }
-        return $prefix
+        set matches [glob -nocomplain -directory $CI_LOGS "${ref}*.status"]
+        if {[llength $matches] == 1} {
+            return [file rootname [file tail [lindex $matches 0]]]
+        }
+        if {[llength $matches] > 1} {
+            return -code error "ambiguous prefix: $ref matches [llength $matches] jobs"
+        }
+        # No ID match — fall through to tag lookup below.
+    } elseif {![regexp {^[a-zA-Z0-9._-]{1,64}$} $ref]} {
+        return -code error "invalid job ref: $ref"
     }
-    set matches [glob -nocomplain -directory $CI_LOGS "${prefix}*.status"]
-    if {[llength $matches] == 0} { return -code error "job not found: $prefix" }
-    if {[llength $matches] >  1} { return -code error "ambiguous prefix: $prefix matches [llength $matches] jobs" }
-    return [file rootname [file tail [lindex $matches 0]]]
+    set tagged {}
+    foreach f [glob -nocomplain -directory $CI_LOGS *.status] {
+        if {[catch {read-file $f} data]} continue
+        if {[regexp {"tag":"([^"]+)"} $data -> tag] && $tag eq $ref} {
+            lappend tagged [file rootname [file tail $f]]
+        }
+    }
+    if {[llength $tagged] == 0} { return -code error "job not found: $ref" }
+    if {[llength $tagged] >  1} { return -code error "ambiguous tag: $ref matches [llength $tagged] jobs" }
+    return [lindex $tagged 0]
 }
 
 proc log-file {id} {
@@ -182,19 +198,29 @@ wapp-route POST /job {
             set subdir $sd
         }
 
+        set tag ""
+        if {[regexp {"tag"\s*:\s*"([^"]+)"} $body -> t]} {
+            if {![regexp {^[a-zA-Z0-9._-]{1,64}$} $t]} {
+                json-err "400 Bad Request" "tag must match ^\[a-zA-Z0-9._-\]{1,64}\$"
+                return
+            }
+            set tag $t
+        }
+
         set id [random-id]
         set subdir_json [expr {$subdir ne "" ? ",\"subdir\":\"[json-str $subdir]\"" : ""}]
-        set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s"%s}} \
-                        $id [json-str $repo] [json-str $commit] [json-str $script] $subdir_json]
+        set tag_json [expr {$tag ne "" ? ",\"tag\":\"[json-str $tag]\"" : ""}]
+        set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s"%s%s}} \
+                        $id [json-str $repo] [json-str $commit] [json-str $script] $subdir_json $tag_json]
         atomic-write [status-file $id] $status
         kick-dispatch
 
         wapp-reply-code "202 Accepted"
         json-ok $status
 
-    } elseif {[regexp {^([0-9a-f]{4,16})/kill$} $tail -> prefix]} {
+    } elseif {[regexp {^([^/]+)/kill$} $tail -> ref]} {
         # ── Kill job ──────────────────────────────────────────────────────────
-        if {[catch {resolve-job-id $prefix} id]} {
+        if {[catch {resolve-job-id $ref} id]} {
             json-err "404 Not Found" $id; return
         }
         set sf [status-file $id]
@@ -337,9 +363,10 @@ proc wapp-default {} {
           "type": "object",
           "properties": {
             "repo":   {"type": "string", "description": "Repo name (must exist in ci-workspace)"},
-            "commit": {"type": "string", "description": "Full or abbreviated git commit hash"},
+            "commit": {"type": "string", "description": "Base commit hash (rsync path) or exact commit under test (HTTP path)"},
             "script": {"type": "string", "description": "Script name to run as ci/<script>, e.g. test"},
-            "subdir": {"type": "string", "description": "Optional subdirectory to run the script in"}
+            "subdir": {"type": "string", "description": "Optional subdirectory to run the script in"},
+            "tag": {"type": "string", "description": "Optional human tag, ^[a-zA-Z0-9._-]{1,64}$, resolvable while unique"}
           },
           "required": ["repo", "commit", "script"]
         },
@@ -351,7 +378,7 @@ proc wapp-default {} {
         "inputSchema": {
           "type": "object",
           "properties": {
-            "id": {"type": "string", "description": "Job id returned by submit_job"}
+            "id": {"type": "string", "description": "Job id, id prefix, or unique tag"}
           },
           "required": ["id"]
         },
@@ -363,7 +390,7 @@ proc wapp-default {} {
         "inputSchema": {
           "type": "object",
           "properties": {
-            "id": {"type": "string", "description": "Job id"}
+            "id": {"type": "string", "description": "Job id, id prefix, or unique tag"}
           },
           "required": ["id"]
         },
@@ -375,7 +402,7 @@ proc wapp-default {} {
         "inputSchema": {
           "type": "object",
           "properties": {
-            "id":   {"type": "string", "description": "Job id"},
+            "id":   {"type": "string", "description": "Job id, id prefix, or unique tag"},
             "path": {"type": "string", "description": "Path relative to the job worktree, e.g. coverage/lcov.info"}
           },
           "required": ["id", "path"]

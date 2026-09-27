@@ -10,7 +10,10 @@ check() {
     local desc="$1" pattern="$2"; shift 2
     local out
     out=$("$@" 2>/dev/null)
-    if printf '%s' "$out" | grep -q "$pattern"; then
+    # Herestring, not a printf|grep pipeline: grep -q quits on first match,
+    # and with pipefail a SIGPIPE-killed printf on a >64KB body (GET /jobs
+    # with a week's history) fails the check despite matching.
+    if grep -q "$pattern" <<<"$out"; then
         printf 'pass: %s\n' "$desc"
         (( PASS++ )) || true
     else

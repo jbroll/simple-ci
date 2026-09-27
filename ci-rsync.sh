@@ -60,6 +60,17 @@ dest="${args[$last]}"
 dest="${dest#/}"
 dest="${dest%/}"
 
+# Optional human tag: REPO/.../SCRIPT[#tag] or .../SCRIPT:SELECTOR#tag, sent by
+# `sci push --tag`. Strip FIRST, before the selector split and path parse —
+# otherwise the tag pollutes the script name. Stored on the status file, shown
+# by `sci stat`, resolvable anywhere a job ID works while unique. CI_TAG (env)
+# remains as a fallback for non-sci invocations.
+TAG="${CI_TAG:-}"
+if [[ "$dest" == *#* ]]; then
+    TAG="${dest##*#}"
+    dest="${dest%%#*}"
+fi
+
 # Optional test selector:  REPO/SUBDIR/SCRIPT:SELECTOR
 # Extract it on the FIRST ':' BEFORE the '/' split below — a selector may be a
 # spec path (e.g. tests/foo.spec.ts:79) whose '/' would otherwise corrupt the
@@ -109,6 +120,12 @@ if [[ -n "$selector" ]] && [[ ! "$selector" =~ ^[a-zA-Z0-9/._:-]+$ ]]; then
     exit 1
 fi
 
+# Human tag was extracted (or CI_TAG read) above; validate the final value here.
+if [[ -n "$TAG" ]] && [[ ! "$TAG" =~ ^[a-zA-Z0-9._-]{1,64}$ ]]; then
+    echo "ci-rsync: tag must match ^[a-zA-Z0-9._-]{1,64}\$: $TAG" >&2
+    exit 1
+fi
+
 # ── Set up worktree ───────────────────────────────────────────────────────────
 ID=$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
 WORKTREE="$CI_WORKTREES/$repo-$ID"
@@ -119,7 +136,7 @@ WORKTREE="$CI_WORKTREES/$repo-$ID"
 exec 3>&1
 exec 1>&2
 
-echo "ci-job: $ID  ($repo${subdir:+/$subdir} → ci/$script${selector:+ :$selector})"
+echo "ci-job: $ID  ($repo${subdir:+/$subdir} → ci/$script${selector:+ :$selector}${TAG:+ #$TAG})"
 
 # Serialize fetch + worktree-add across concurrent pushers for this repo.
 # Concurrent git-fetch / worktree-add on one base repo race on refs and the
@@ -143,7 +160,8 @@ exec 8>&-
 # replaces it, and the failure paths remove it with the worktree.
 SUBDIR_JSON="${subdir:+,\"subdir\":\"$subdir\"}"
 SELECTOR_JSON="${selector:+,\"selector\":\"$selector\"}"
-printf '%s' "{\"id\":\"$ID\",\"status\":\"rsyncing\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON},\"worktree\":\"$WORKTREE\"}" > "$CI_LOGS/$ID.status"
+TAG_JSON="${TAG:+,\"tag\":\"$TAG\"}"
+printf '%s' "{\"id\":\"$ID\",\"status\":\"rsyncing\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON}${TAG_JSON},\"worktree\":\"$WORKTREE\"}" > "$CI_LOGS/$ID.status"
 
 # ── Run real rsync into the worktree ─────────────────────────────────────────
 args[last]="$WORKTREE/"
@@ -180,7 +198,7 @@ if [[ ! -x "$WORKTREE/ci/$script" ]]; then
 fi
 
 # ── Queue the job ─────────────────────────────────────────────────────────────
-STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON},\"worktree\":\"$WORKTREE\"}"
+STATUS="{\"id\":\"$ID\",\"status\":\"queued\",\"repo\":\"$repo\",\"commit\":\"$BASE\",\"script\":\"$script\"${SUBDIR_JSON}${SELECTOR_JSON}${TAG_JSON},\"worktree\":\"$WORKTREE\"}"
 printf '%s' "$STATUS" > "$CI_LOGS/$ID.status"
 
 echo "ci-job: $ID queued"

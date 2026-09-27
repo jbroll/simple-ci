@@ -23,6 +23,7 @@ REPO=$(field repo)
 COMMIT=$(field commit)
 SCRIPT=$(field script)
 SUBDIR=$(field subdir)
+TAG=$(field tag)
 SELECTOR=$(field selector)   # optional test selector from REPO/SUBDIR/SCRIPT:SELECTOR
 PREBUILT=$(field worktree)   # non-empty for rsync path; worktree already created
 
@@ -34,7 +35,7 @@ export CI_JOB_ID="$ID"
 # Optional test selector — a job script may run just the matching test(s).
 export CI_SELECTOR="$SELECTOR"
 
-log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${SELECTOR:+ :$SELECTOR}${PREBUILT:+ [prebuilt]}"
+log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${SELECTOR:+ :$SELECTOR}${TAG:+ #$TAG}${PREBUILT:+ [prebuilt]}"
 
 WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
 RUNDIR="${WORKTREE}${SUBDIR:+/$SUBDIR}"
@@ -101,8 +102,9 @@ printf '%s' "$$" >&9
     set -e
     echo "=== simple-ci job $ID ==="
     echo "repo:    $REPO"
-    echo "commit:  $COMMIT"
+    echo "commit:  $COMMIT  (base for rsync pushes; tested tree includes the local overlay)"
     echo "script:  ci/$SCRIPT"
+    [ -n "$TAG"      ] && echo "tag:     $TAG"
     [ -n "$SUBDIR"   ] && echo "subdir:  $SUBDIR"
     [ -n "$PREBUILT" ] && echo "source:  rsync (prebuilt worktree)"
     echo "started: $(jq -r '.started // ""' "$STATUSFILE")"

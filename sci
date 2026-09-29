@@ -124,20 +124,21 @@ Usage: sci stat [-w [INTERVAL]] [-n COUNT] [-s STATUS]
 EOF
             ;;
         push) cat <<'EOF'
-Usage: sci push REPO[/SUBDIR]/SCRIPT [-t TAG|--tag TAG]
+Usage: sci push REPO[/SUBDIR]/SCRIPT [-t TAG|--tag TAG] [--supersede]
 
   Rsync the current directory to the CI server and queue a job.
   BASE is origin/HEAD; the tested tree is BASE plus your local working
   tree overlaid, so BASE is not the tested commit.
   Prints the job ID to stdout.
 
-  -t TAG    human tag for this job (^[a-zA-Z0-9._-]{1,64}$). Shown by
-            sci stat and usable anywhere a job ID works while unique.
+  -t TAG        human tag for this job (^[a-zA-Z0-9._-]{1,64}$). Shown by
+                sci stat and usable anywhere a job ID works while unique.
+  --supersede   kill this session's previous job (same worktree path and
+                script) if it is still queued or running, then queue.
 
-  Refuses if another job from the same client session (worktree-path +
-  script-arg) is still queued or running, to prevent duplicate work from
-  concurrent invocations (e.g. parallel git-commit attempts).
-  Session state: ~/.cache/sci/sessions/<sha>.job
+  Each push queues an independent job; earlier jobs keep running.
+  Concurrent pushes from one session are serialized by a lock.
+  Session state (the last job id): ~/.cache/sci/sessions/<sha>.job
 
   Optional env:
     CI_RSYNC_ARGS   extra rsync args (e.g. --include rules)
@@ -321,10 +322,11 @@ cmd_push() {
     if [[ $# -lt 1 ]]; then cmd_help push >&2; exit 1; fi
 
     local script_arg="$1"; shift
-    local tag=""
+    local tag="" supersede=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--tag) tag="${2:?--tag requires a value}"; shift 2 ;;
+            --supersede) supersede=1; shift ;;
             -h|--help) cmd_help push; exit 0 ;;
             *) echo "sci push: unknown option: $1" >&2; exit 1 ;;
         esac
@@ -350,9 +352,9 @@ cmd_push() {
         exit 1
     fi
 
-    # If the previous job for this session is still queued or running, refuse.
-    # Terminal states (pass/fail/killed) are fine — we just overwrite.
-    if [[ -f "$session_file" ]]; then
+    # Pushes queue independent jobs. --supersede kills this session's previous
+    # job first, for a re-push whose earlier result is no longer wanted.
+    if [[ -n "$supersede" && -f "$session_file" ]]; then
         local existing existing_state
         existing=$(cat "$session_file" 2>/dev/null || true)
         if [[ -n "$existing" && -n "${CI_SERVER_URL:-}" ]]; then
@@ -360,10 +362,6 @@ cmd_push() {
                 | jq -r '.status // empty' 2>/dev/null || true)
             case "$existing_state" in
                 queued|running)
-                    # Supersede rather than refuse: a new push from the same
-                    # session means the previous job's result is no longer
-                    # wanted. Killing + proceeding prevents a job orphaned by an
-                    # aborted commit from blocking every subsequent push.
                     echo "sci: superseding previous session job $existing ($existing_state)" >&2
                     "${CURL[@]}" -X POST "$CI_SERVER_URL/job/$existing/kill" >/dev/null 2>&1 || true
                     ;;

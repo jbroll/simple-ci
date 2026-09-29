@@ -97,8 +97,9 @@ job=$(sci push myrepo/ci/test)
 sci wait "$job"          # streams the log, exits 0/1 for pass/fail
 ```
 
-`sci stat` lists jobs, `sci kill <id>` stops one. Pushing again from the same shell
-session supersedes the previous job rather than queueing behind it.
+`sci stat` lists jobs, `sci kill <id>` stops one. Each push queues an independent job;
+`sci push --supersede` kills this session's previous job first when its result is no
+longer wanted.
 
 ## 5. Know what actually got tested
 

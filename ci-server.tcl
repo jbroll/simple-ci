@@ -309,8 +309,30 @@ wapp-route GET /artifact/id {
         json-err "404 Not Found" $path
         return
     }
-    wapp-mimetype "text/plain; charset=utf-8"
-    wapp [read-file $path]
+    set type [binary-mimetype $path]
+    if {$type eq ""} {
+        wapp-mimetype "text/plain; charset=utf-8"
+        wapp [read-file $path]
+        return
+    }
+    # wapp sends a non-text reply's bytes as they are.
+    set fd [open $path rb]
+    set data [read $fd]
+    close $fd
+    wapp-mimetype $type
+    wapp $data
+}
+
+proc binary-mimetype {path} {
+    switch -- [string tolower [file extension $path]] {
+        .png  { return image/png }
+        .jpg - .jpeg { return image/jpeg }
+        .gif  { return image/gif }
+        .webp { return image/webp }
+        .pdf  { return application/pdf }
+        .gz - .tgz - .zip - .tar - .bin - .stl - .3mf - .glb - .wasm { return application/octet-stream }
+        default { return "" }
+    }
 }
 
 # GET /baseline/:repo — the full-run e2e coverage baseline ci/e2e-map persists

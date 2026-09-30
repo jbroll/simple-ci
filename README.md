@@ -326,6 +326,10 @@ resolved file — symlinks followed, including a final one — must still sit un
 the worktree. Anything else is a 404 naming the reason. A job whose worktree has
 been reclaimed (see `CI_WORKTREE_TTL`) has no artifacts.
 
+Files with a binary extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.pdf`,
+`.gz`, `.tgz`, `.zip`, `.tar`, `.bin`, `.stl`, `.3mf`, `.glb`, `.wasm`) are sent
+byte for byte with their media type; everything else is sent as UTF-8 text.
+
 `/baseline/:repo` serves the full-run e2e lcov `ci/e2e-map` persists in
 `CI_FLAKE`, together with the source tree it was measured against (`tree`, empty
 when none was recorded). The repo name is validated and the filename is fixed:

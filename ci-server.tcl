@@ -2,6 +2,10 @@
 # simple-ci HTTP service
 package require Tcl 8.6-
 
+# Logs, status files and artifacts are UTF-8. Under runit there is no locale,
+# so Tcl defaults to iso8859-1 and wapp's utf-8 reply encoding doubles them.
+encoding system utf-8
+
 set script_dir [file dirname [file normalize [info script]]]
 
 source [file join $script_dir wapp wapp.tcl]

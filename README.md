@@ -2,7 +2,7 @@
 
 A minimal distributed CI system. Jobs are submitted from a developer machine and executed in isolation on a build host. The system is intentionally small: ~200 lines of Tcl for the HTTP server, ~110 lines of bash for the per-job runner, ~160 lines of bash for the client CLI.
 
-Putting a repo on CI for the first time: **[`docs/quickstart.md`](docs/quickstart.md)** — the five steps in order, with the failure mode each one produces when skipped. The rest of this file is reference.
+Putting a repo on CI for the first time: **[`docs/quickstart.md`](docs/quickstart.md)** — the five steps in order, with the failure mode each one produces when skipped. The rest of this file is reference. Planned work is in [`docs/backlog.md`](docs/backlog.md).
 
 ## Architecture
 
@@ -140,8 +140,9 @@ git clone git@github.com:jbroll/simple-ci.git ~/src/simple-ci
 # Clone repos to test into ci-workspace
 git clone git@github.com:you/myrepo.git ~/ci-workspace/myrepo
 
-# For repos with file: sibling dependencies, pre-build them once:
-# cd ~/ci-workspace/some-dep && npm install && npm run build
+# For repos with file: sibling dependencies, pre-build them. sci does not
+# update them, so pull and rebuild after each dependency lands:
+# cd ~/ci-workspace/some-dep && git pull --ff-only && npm ci && npm run build
 
 # Start the server (see Deployment for persistent runit setup)
 ~/src/simple-ci/ci-server.tcl -server 0.0.0.0:8080

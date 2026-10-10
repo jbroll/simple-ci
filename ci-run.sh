@@ -130,6 +130,9 @@ printf '%s' "$$" >&9
         exit 1
     fi
 
+    # set -e is off inside this subshell (its status is tested by ||), so exit explicitly.
+    "$(dirname "${BASH_SOURCE[0]}")/ci-deps.sh" sync "$WORKTREE" || exit $?
+
     cd "$RUNDIR" && timeout --kill-after=10 "${CI_JOB_TIMEOUT:-3600}" "$RUN_SCRIPT"
 
 ) > "$LOGFILE" 2>&1 || EXIT_CODE=$?

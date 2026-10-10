@@ -16,12 +16,13 @@ SWEEP_SRV=""
 cleanup() {
     [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null
     [[ -n "$SWEEP_SRV" ]] && kill "$SWEEP_SRV" 2>/dev/null
+    chmod -R u+w "$WORK" 2>/dev/null || true   # dependency SHA dirs are read-only
     rm -rf "$WORK"
     return 0
 }
 trap cleanup EXIT
 
-export CI_LOGS="$WORK/logs" CI_WORKSPACE="$WORK/ws" CI_WORKTREES="$WORK/wt"
+export CI_LOGS="$WORK/logs" CI_WORKSPACE="$WORK/ws" CI_WORKTREES="$WORK/wt" CI_DEPS_DIR="$WORK/deps"
 mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES"
 
 git init -q --bare "$WORK/origin.git"
@@ -82,6 +83,128 @@ else no "worktree nested in its job dir" "worktree=$wt"; fi
 
 read -r st ex id <<<"$(run_job demo "$COMMIT" bad)"
 if [[ "$st" == fail && "$ex" == 3 ]]; then ok "fail job lifecycle (exit propagated)"; else no "fail job" "status=$st exit=$ex"; fi
+
+# Sibling dependencies: app declares CI_DEPS="dep"; ci-deps.sh builds dep at
+# origin/HEAD into $CI_DEPS_DIR/dep-<sha> and links it at <jobdir>/dep.
+git init -q --bare "$WORK/dep.git"
+git clone -q "$WORK/dep.git" "$WORK/dep-src" 2>/dev/null
+(
+    cd "$WORK/dep-src"
+    git config user.email t@t; git config user.name t
+    mkdir -p ci packages/p
+    cat > ci/build <<EOF
+#!/usr/bin/env bash
+set -e
+if [ ! -d node_modules ]; then
+    echo "dep-build: install"
+    mkdir -p node_modules/.cache node_modules/.bin packages/p/node_modules
+    echo m > node_modules/m; echo c > node_modules/.cache/c; echo n > packages/p/node_modules/n
+    ln -s ../m node_modules/.bin/m
+fi
+if [ -e "$WORK/dep-fail" ]; then echo "dep-build: failing" >&2; exit 4; fi
+echo "dep-build: build"
+cat VERSION > out
+EOF
+    chmod +x ci/build
+    echo '{}' > packages/p/package.json
+    echo lock1 > package-lock.json; echo v1 > VERSION
+    git add -A; git commit -qm v1; git push -q origin HEAD:master
+)
+git clone -q "$WORK/dep.git" "$CI_WORKSPACE/dep" 2>/dev/null
+git -C "$CI_WORKSPACE/dep" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+dep_commit() {   # VERSION LOCKFILE — push a new dep revision, echo its SHA
+    (
+        cd "$WORK/dep-src"
+        echo "$1" > VERSION; echo "$2" > package-lock.json
+        git commit -qam "$1"; git push -q origin HEAD:master
+    )
+    git -C "$WORK/dep-src" rev-parse HEAD
+}
+
+git init -q --bare "$WORK/app.git"
+git clone -q "$WORK/app.git" "$CI_WORKSPACE/app" 2>/dev/null
+(
+    cd "$CI_WORKSPACE/app"
+    git config user.email t@t; git config user.name t
+    mkdir ci
+    echo 'CI_DEPS="dep"' > ci/simple-ci.conf
+    # shellcheck disable=SC2016  # expands when ci/check runs
+    printf '#!/usr/bin/env bash\nset -e\nout=$(cat ../dep/out)\necho "app saw $out"\n' > ci/check
+    chmod +x ci/check
+    git add -A; git commit -qm init; git push -q origin HEAD:master
+)
+git -C "$CI_WORKSPACE/app" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+APP=$(git -C "$CI_WORKSPACE/app" rev-parse HEAD)
+
+inode() { stat -c %i "$1" 2>/dev/null || echo "none:$1"; }
+canon() { readlink -f "$1"; }
+
+SHA1=$(git -C "$WORK/dep-src" rev-parse HEAD); D1="$CI_DEPS_DIR/dep-$SHA1"
+read -r st ex id1 <<<"$(run_job app "$APP" check)"
+log=$(curl -s "$URL/log/$id1")
+if [[ "$st" == pass ]] && grep -q '^app saw v1$' <<<"$log"; then ok "dep job sees the built dependency"
+else no "dep job sees the built dependency" "status=$st exit=$ex $log"; fi
+if grep -q "^dep:     dep $SHA1$" <<<"$log"; then ok "dep SHA in job log"; else no "dep SHA in job log" "$log"; fi
+if [[ "$(canon "$CI_WORKTREES/app-$id1/dep")" == "$(canon "$D1")" ]]; then ok "job dir links the SHA dir"
+else no "job dir links the SHA dir" "$(ls -l "$CI_WORKTREES/app-$id1")"; fi
+
+read -r st ex id2 <<<"$(run_job app "$APP" check)"
+log=$(curl -s "$URL/log/$id2")
+if [[ "$st" == pass ]] && ! grep -q '^dep-build:' <<<"$log"; then ok "same SHA is not rebuilt"
+else no "same SHA is not rebuilt" "status=$st $log"; fi
+if [[ $(id -u) == 0 ]]; then ok "complete SHA dir is read-only (skipped as root)"
+elif touch "$D1/x" 2>/dev/null; then no "complete SHA dir is read-only"
+else ok "complete SHA dir is read-only"; fi
+
+SHA2=$(dep_commit v2 lock1); D2="$CI_DEPS_DIR/dep-$SHA2"
+read -r st ex id3 <<<"$(run_job app "$APP" check)"
+log=$(curl -s "$URL/log/$id3")
+if [[ "$st" == pass ]] && grep -q '^app saw v2$' <<<"$log" && ! grep -q '^dep-build: install' <<<"$log"
+then ok "same lockfile skips install"; else no "same lockfile skips install" "status=$st $log"; fi
+if [[ "$(inode "$D2/node_modules/m")" == "$(inode "$D1/node_modules/m")" \
+   && "$(inode "$D2/packages/p/node_modules/n")" == "$(inode "$D1/packages/p/node_modules/n")" ]]
+then ok "node_modules hardlinked, nested ones too"; else no "node_modules hardlinked, nested ones too"; fi
+if [[ ! -e "$D2/node_modules/.cache" && -L "$D2/node_modules/.bin/m" ]]; then ok "reuse skips caches, keeps .bin"
+else no "reuse skips caches, keeps .bin" "$(ls -A "$D2/node_modules")"; fi
+
+SHA3=$(dep_commit v3 lock2); D3="$CI_DEPS_DIR/dep-$SHA3"
+read -r st ex id4 <<<"$(run_job app "$APP" check)"
+log=$(curl -s "$URL/log/$id4")
+if [[ "$st" == pass ]] && grep -q '^dep-build: install' <<<"$log" \
+   && [[ "$(inode "$D3/node_modules/m")" != "$(inode "$D2/node_modules/m")" ]]
+then ok "changed lockfile reinstalls"; else no "changed lockfile reinstalls" "status=$st $log"; fi
+
+touch "$WORK/dep-fail"
+SHA4=$(dep_commit v4 lock2); D4="$CI_DEPS_DIR/dep-$SHA4"
+read -r st ex id5 <<<"$(run_job app "$APP" check)"
+log=$(curl -s "$URL/log/$id5")
+if [[ "$st" == fail ]] && grep -q 'ci-deps: dep: ci/build failed' <<<"$log" && ! grep -q '^app saw' <<<"$log"
+then ok "failed dep build fails the job, no fallback"; else no "failed dep build fails the job, no fallback" "status=$st $log"; fi
+if [[ -d "$D4" && ! -e "$D4/.ci-complete" ]]; then ok "failed build leaves the SHA dir incomplete"
+else no "failed build leaves the SHA dir incomplete"; fi
+if [[ $(id -u) == 0 || ! -w "$D3/node_modules/m" ]]; then ok "reuse leaves shared files read-only"
+else no "reuse leaves shared files read-only"; fi
+rm -f "$WORK/dep-fail"
+read -r st ex id6 <<<"$(run_job app "$APP" check)"
+log=$(curl -s "$URL/log/$id6")
+if [[ "$st" == pass ]] && grep -q '^app saw v4$' <<<"$log"; then ok "incomplete SHA dir is rebuilt on the next job"
+else no "incomplete SHA dir is rebuilt on the next job" "status=$st $log"; fi
+if [[ $(id -u) == 0 || ! -w "$D3/node_modules/m" ]]; then ok "rebuild over an incomplete dir keeps shared files read-only"
+else no "rebuild over an incomplete dir keeps shared files read-only"; fi
+
+# D1 loses its job dirs; D2 and D3 stay linked; D4 is newest.
+rm -rf "$CI_WORKTREES/app-$id1" "$CI_WORKTREES/app-$id2"
+BOGUS="$CI_DEPS_DIR/dep-$(printf '0%.0s' {1..40})"
+mkdir -p "$BOGUS"
+env HOME="$WORK" "$REPO/ci-deps.sh" prune >"$WORK/prune.log" 2>&1 || true
+if [[ ! -e "$D1" ]]; then ok "prune removes an unlinked old SHA"; else no "prune removes an unlinked old SHA" "$(cat "$WORK/prune.log")"; fi
+if [[ ! -e "$BOGUS" ]]; then ok "prune removes an incomplete SHA"; else no "prune removes an incomplete SHA"; fi
+if [[ -d "$D2" && -d "$D3" ]]; then ok "prune keeps linked SHAs"; else no "prune keeps linked SHAs"; fi
+if [[ -e "$D4/.ci-complete" ]]; then ok "prune keeps the newest SHA"; else no "prune keeps the newest SHA"; fi
+if [[ $(id -u) == 0 || ! -w "$D2/node_modules/m" ]]; then ok "prune keeps files shared with a kept SHA read-only"
+else no "prune keeps files shared with a kept SHA read-only"; fi
+if ! git -C "$CI_WORKSPACE/dep" worktree list | grep -q "dep-$SHA1"; then ok "prune unregisters the git worktree"
+else no "prune unregisters the git worktree"; fi
 
 # Worktree expiry and orphan sweep. Its own server + paths: the assertions above
 # depend on status files surviving, and this needs entries aged past the TTLs.

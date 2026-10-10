@@ -4,6 +4,6 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
-shellcheck "$REPO/ci-run.sh" "$REPO/ci-rsync.sh" "$REPO/sci" \
+shellcheck "$REPO/ci-run.sh" "$REPO/ci-rsync.sh" "$REPO/ci-deps.sh" "$REPO/sci" \
     "$REPO/ci-setup.sh" "$REPO/ci/smoke" "$REPO/ci/e2e"
 echo "shellcheck passed"

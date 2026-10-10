@@ -703,6 +703,13 @@ proc prune-worktrees {} {
     }
 }
 
+# Remove dependency SHA dirs that no job dir links to (see ci-deps.sh). Detached
+# so a slow removal never stalls the loop.
+proc prune-deps {} {
+    global script_dir
+    catch {exec [file join $script_dir ci-deps.sh] prune >@stderr 2>@stderr &}
+}
+
 # Fire $CI_IDLE_HOOK (a shell command) once each time the queue drains from
 # busy → idle (no running and no queued jobs). Used to recycle shared, stateful
 # test infra (e.g. an in-memory Jazz sync peer that accumulates CoValues across
@@ -733,7 +740,7 @@ proc maintenance {} {
     expire-old-jobs
     check-idle-hook
     sweep-orphan-worktrees
-    if {[incr maintenance_ticks] % 6 == 0} { prune-worktrees }
+    if {[incr maintenance_ticks] % 6 == 0} { prune-worktrees; prune-deps }
     after 10000 maintenance
 }
 

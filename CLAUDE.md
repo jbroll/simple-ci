@@ -83,7 +83,7 @@ Or run locally: `CI_SERVER_URL=http://buildhost:8080 ./ci/smoke`
 | Repo | Remote | Script | Notes |
 |---|---|---|---|
 | `simple-ci` | github:jbroll/simple-ci | `smoke`, `lint`, `e2e` | CI self-tests |
-| `wicketmap` | github:jbroll/wicketmap | `test` | `ci/test` sources `ci/setup.sh` (secrets, .env.local, sibling symlinks) then runs `npm install && npm run test:run` |
+| `wicketmap` | github:jbroll/wicketmap | `test` | `ci/test` sources `ci/setup.sh` (secrets, .env.local) then runs `npm install && npm run test:run`; `CI_DEPS="jbr-jazz nmea-widgets jazz-mock"` |
 | `jscadui` | github:jbroll/jscadui | `test` | `ci/test` runs `npm install` at repo root then `npm install && npm run test:local` in `packages/openscad` |
 | `jbr-jazz` | github:jbroll/jbr-jazz | dependency | built by sci from its `ci/build` |
 | `nmea-widgets` | github:jbroll/nmea-widgets | dependency | same |

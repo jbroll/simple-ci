@@ -76,6 +76,9 @@ if curl -s "$URL/nope" | grep -q '"error"'; then ok "JSON 404 hook"; else no "JS
 read -r st ex id <<<"$(run_job demo "$COMMIT" ok)"
 if [[ "$st" == pass && "$ex" == 0 ]]; then ok "pass job lifecycle"; else no "pass job" "status=$st exit=$ex"; fi
 if curl -s "$URL/log/$id" | grep -q '^ok$'; then ok "pass job log captured"; else no "pass job log"; fi
+wt=$(curl -s "$URL/job/$id" | jq -r '.worktree // empty')
+if [[ "$wt" == "$CI_WORKTREES/demo-$id/demo" && -f "$wt/ci/ok" ]]; then ok "worktree nested in its job dir"
+else no "worktree nested in its job dir" "worktree=$wt"; fi
 
 read -r st ex id <<<"$(run_job demo "$COMMIT" bad)"
 if [[ "$st" == fail && "$ex" == 3 ]]; then ok "fail job lifecycle (exit propagated)"; else no "fail job" "status=$st exit=$ex"; fi
@@ -87,25 +90,35 @@ mkdir -p "$SWEEP/logs" "$SWEEP/ws" "$SWEEP/wt" "$SWEEP/dep"
 OLD=$(date -d '4 hours ago' '+%Y%m%d%H%M')
 TWO_H=$(date -u -d '2 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
 FOUR_H=$(date -u -d '4 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
-finished_job() {   # id status finished — status file whose worktree exists
-    mkdir -p "$SWEEP/wt/demo-$1"
+finished_job() {   # id status finished [flat] — status file whose worktree exists
+    local wt="$SWEEP/wt/demo-$1/demo"
+    [[ -n "${4:-}" ]] && wt="$SWEEP/wt/demo-$1"
+    mkdir -p "$wt"
     printf '{"id":"%s","repo":"demo","status":"%s","finished":"%s","worktree":"%s"}\n' \
-        "$1" "$2" "$3" "$SWEEP/wt/demo-$1" > "$SWEEP/logs/$1.status"
+        "$1" "$2" "$3" "$wt" > "$SWEEP/logs/$1.status"
 }
-finished_job aaaaaaaaaaaaaaaa pass "$TWO_H"   # past pass TTL      → worktree removed
-finished_job bbbbbbbbbbbbbbbb fail "$TWO_H"   # within failed TTL  → worktree kept
-finished_job cccccccccccccccc fail "$FOUR_H"  # past failed TTL    → worktree removed
-mkdir -p "$SWEEP/wt/demo-0123456789abcdef"   # orphan, aged  → swept
-mkdir -p "$SWEEP/wt/demo-fedcba9876543210"   # has a status  → kept
-mkdir -p "$SWEEP/wt/demo-1111111111111111"   # orphan, fresh → kept
-mkdir -p "$SWEEP/wt/demo-nothex"             # wrong shape   → kept
-mkdir -p "$SWEEP/wt/handplaced"              # wrong shape   → kept
-ln -s "$SWEEP/dep" "$SWEEP/wt/deplink"       # dep symlink   → kept
-# old dir mtime (rsync -a stamps the sender's) but fresh git admin dir → kept
-mkdir -p "$SWEEP/wt/demo-2222222222222222" "$SWEEP/ws/demo/.git/worktrees/demo-2222222222222222"
+finished_job aaaaaaaaaaaaaaaa pass "$TWO_H"        # past pass TTL      → job dir removed
+finished_job bbbbbbbbbbbbbbbb fail "$TWO_H"        # within failed TTL  → worktree kept
+finished_job cccccccccccccccc fail "$FOUR_H"       # past failed TTL    → job dir removed
+finished_job dddddddddddddddd pass "$TWO_H" flat   # old flat layout    → worktree removed
+ln -s "$SWEEP/dep" "$SWEEP/wt/demo-aaaaaaaaaaaaaaaa/deplink"   # removing the job dir keeps dep/
+mkdir -p "$SWEEP/wt/demo-0123456789abcdef/demo"    # orphan, aged  → swept
+mkdir -p "$SWEEP/wt/demo-4444444444444444"         # flat orphan, aged → swept
+mkdir -p "$SWEEP/wt/demo-fedcba9876543210/demo"    # has a status  → kept
+mkdir -p "$SWEEP/wt/demo-1111111111111111/demo"    # orphan, fresh → kept
+mkdir -p "$SWEEP/wt/demo-nothex"                   # wrong shape   → kept
+mkdir -p "$SWEEP/wt/handplaced"                    # wrong shape   → kept
+ln -s "$SWEEP/dep" "$SWEEP/wt/deplink"             # dep symlink   → kept
+touch "$SWEEP/dep/keep"
+# Old dir mtimes (rsync -a stamps the sender's) but a fresh worktree .git file → kept,
+# nested and flat.
+mkdir -p "$SWEEP/wt/demo-2222222222222222/demo" "$SWEEP/wt/demo-3333333333333333"
+touch "$SWEEP/wt/demo-2222222222222222/demo/.git" "$SWEEP/wt/demo-3333333333333333/.git"
 echo '{"id":"fedcba9876543210","status":"pass"}' > "$SWEEP/logs/fedcba9876543210.status"
-touch -t "$OLD" "$SWEEP/wt/demo-0123456789abcdef" "$SWEEP/wt/demo-nothex" "$SWEEP/wt/handplaced" \
-    "$SWEEP/wt/demo-2222222222222222"
+touch -t "$OLD" "$SWEEP/wt/demo-0123456789abcdef/demo" "$SWEEP/wt/demo-0123456789abcdef" \
+    "$SWEEP/wt/demo-4444444444444444" "$SWEEP/wt/demo-nothex" "$SWEEP/wt/handplaced" \
+    "$SWEEP/wt/demo-2222222222222222/demo" "$SWEEP/wt/demo-2222222222222222" \
+    "$SWEEP/wt/demo-3333333333333333"
 
 SPORT=$(( PORT + 100 ))
 while ss -tln "sport = :$SPORT" 2>/dev/null | grep -q ":$SPORT"; do SPORT=$(( SPORT + 1 )); done
@@ -118,18 +131,23 @@ for _ in $(seq 1 40); do
 done
 kill "$SWEEP_SRV" 2>/dev/null || true
 
-if [[ ! -d "$SWEEP/wt/demo-0123456789abcdef" ]]; then ok "sweep removes aged orphan worktree"
-else no "sweep removes aged orphan worktree" "$(cat "$WORK/sweep.log")"; fi
-for keep in demo-fedcba9876543210 demo-1111111111111111 demo-2222222222222222 demo-nothex handplaced deplink; do
+for gone in demo-0123456789abcdef demo-4444444444444444; do
+    if [[ ! -e "$SWEEP/wt/$gone" ]]; then ok "sweep removes aged orphan $gone"
+    else no "sweep removes aged orphan $gone" "$(cat "$WORK/sweep.log")"; fi
+done
+for keep in demo-fedcba9876543210 demo-1111111111111111 demo-2222222222222222 \
+            demo-3333333333333333 demo-nothex handplaced deplink; do
     if [[ -e "$SWEEP/wt/$keep" ]]; then ok "sweep keeps $keep"; else no "sweep keeps $keep"; fi
 done
-for gone in aaaaaaaaaaaaaaaa cccccccccccccccc; do
-    if [[ ! -e "$SWEEP/wt/demo-$gone" ]]; then ok "expiry removes worktree $gone"
-    else no "expiry removes worktree $gone"; fi
+for gone in aaaaaaaaaaaaaaaa cccccccccccccccc dddddddddddddddd; do
+    if [[ ! -e "$SWEEP/wt/demo-$gone" ]]; then ok "expiry removes job dir $gone"
+    else no "expiry removes job dir $gone"; fi
 done
-if [[ -e "$SWEEP/wt/demo-bbbbbbbbbbbbbbbb" ]]; then ok "expiry keeps recent failed worktree"
+if [[ -e "$SWEEP/dep/keep" ]]; then ok "expiry leaves a job dir's symlink target alone"
+else no "expiry leaves a job dir's symlink target alone"; fi
+if [[ -e "$SWEEP/wt/demo-bbbbbbbbbbbbbbbb/demo" ]]; then ok "expiry keeps recent failed worktree"
 else no "expiry keeps recent failed worktree"; fi
-for id in aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccccccccccc; do
+for id in aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccccccccccc dddddddddddddddd; do
     if [[ -e "$SWEEP/logs/$id.status" ]]; then ok "expiry keeps status $id"
     else no "expiry keeps status $id"; fi
 done

@@ -564,14 +564,27 @@ proc job-lock-held {id} {
     return [catch {exec flock -n $lf true}]
 }
 
+# A job's private parent dir: $CI_WORKTREES/<repo>-<16 hex id>.
+proc job-dir? {dir} {
+    global CI_WORKTREES
+    expr {[file normalize [file dirname $dir]] eq $CI_WORKTREES
+          && [regexp {^.+-[0-9a-f]{16}$} [file tail $dir]]}
+}
+
 proc remove-job-worktree {data} {
     global CI_WORKSPACE
     if {![regexp {"worktree":"([^"]+)"} $data -> worktree]} return
-    if {![file isdirectory $worktree]} return
-    if {[regexp {"repo":"([^"]+)"} $data -> repo]} {
-        catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $worktree}
+    if {[file isdirectory $worktree]} {
+        if {[regexp {"repo":"([^"]+)"} $data -> repo]} {
+            catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $worktree}
+        }
+        catch {file delete -force $worktree}
     }
-    catch {file delete -force $worktree}
+    # Worktrees from before the nested layout sit directly in $CI_WORKTREES.
+    set jobdir [file dirname $worktree]
+    if {[job-dir? $jobdir] && [file isdirectory $jobdir]} {
+        catch {file delete -force $jobdir}
+    }
 }
 
 proc expire-old-jobs {} {
@@ -642,11 +655,11 @@ proc expire-old-jobs {} {
 
 # expire-old-jobs only walks status files, so a worktree whose status file is
 # already gone is invisible to it and lives forever. Sweep the worktree root
-# itself, restricted to the <repo>-<16 hex id> name ci-run.sh/ci-rsync.sh
-# create: the root also holds dependency symlinks (see ci-setup.sh) that must
-# survive, and anything hand-placed there is not ours to delete. Gated on
-# the failed-job worktree TTL because ci-rsync.sh creates the directory and
-# then rsyncs for minutes before writing the status file.
+# itself, restricted to the <repo>-<16 hex id> job dirs ci-run.sh/ci-rsync.sh
+# create: anything else in the root, such as old dependency symlinks or
+# hand-placed dirs, is not ours to delete. Gated on the failed-job worktree
+# TTL because ci-rsync.sh creates the directory and then rsyncs for minutes
+# before writing the status file.
 proc sweep-orphan-worktrees {} {
     global CI_WORKTREES CI_WORKSPACE CI_JOB_TTL CI_FAILED_WORKTREE_TTL
     if {$CI_JOB_TTL <= 0} return
@@ -657,14 +670,19 @@ proc sweep-orphan-worktrees {} {
         if {[file exists [status-file $id]]} continue
         # rsync -a stamps the worktree root with the sender's mtime, often
         # hours old, so the dir can look ancient seconds after creation. The
-        # git admin dir records when the worktree was made; age by the newer.
+        # worktree's .git file is written by `git worktree add` and excluded
+        # from rsync, so it records creation; age by the newest. The job-dir
+        # .git covers worktrees from before the nested layout.
         set born [file mtime $dir]
-        set admin [file join $CI_WORKSPACE $repo .git worktrees [file tail $dir]]
-        if {[file isdirectory $admin] && [file mtime $admin] > $born} {
-            set born [file mtime $admin]
+        foreach gitfile [list [file join $dir $repo .git] [file join $dir .git]] {
+            if {[file exists $gitfile] && [file mtime $gitfile] > $born} {
+                set born [file mtime $gitfile]
+            }
         }
         if {[clock seconds] - $born < $orphan_ttl} continue
-        catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $dir}
+        foreach wt [list [file join $dir $repo] $dir] {
+            catch {exec git -C [file join $CI_WORKSPACE $repo] worktree remove --force $wt}
+        }
         if {[catch {file delete -force $dir} err]} {
             puts stderr "sweep-orphan-worktrees: [file tail $dir]: $err"
         } else {

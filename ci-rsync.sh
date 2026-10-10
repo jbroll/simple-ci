@@ -131,7 +131,10 @@ fi
 
 # ── Set up worktree ───────────────────────────────────────────────────────────
 ID=$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
-WORKTREE="$CI_WORKTREES/$repo-$ID"
+# The job dir is the worktree's private parent, so a `file:../dep` sibling
+# resolves per job rather than to a path every job shares.
+JOBDIR="$CI_WORKTREES/$repo-$ID"
+WORKTREE="$JOBDIR/$repo"
 
 # rsync speaks its protocol over stdout — any stray byte breaks the handshake.
 # Save real stdout as fd 3, point stdout at stderr for all setup code,
@@ -152,6 +155,7 @@ if ! flock -w 120 8; then
 fi
 git -C "$CI_WORKSPACE/$repo" fetch --quiet origin
 BASE=$(git -C "$CI_WORKSPACE/$repo" rev-parse origin/HEAD)
+mkdir -p "$JOBDIR"
 git -C "$CI_WORKSPACE/$repo" worktree add "$WORKTREE" "$BASE"
 flock -u 8
 exec 8>&-
@@ -177,6 +181,7 @@ exec 3>&1; exec 1>&2  # back to stderr-only for cleanup
 
 if [[ $RSYNC_EXIT -ne 0 ]]; then
     git -C "$CI_WORKSPACE/$repo" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    rm -rf "$JOBDIR"
     rm -f "$CI_LOGS/$ID.status"
     exit $RSYNC_EXIT
 fi
@@ -196,6 +201,7 @@ if [[ ! -x "$WORKTREE/ci/$script" ]]; then
     echo "ci-rsync:   worktree ci/ listing:" >&2
     ls -la "$WORKTREE/ci" >&2 2>/dev/null || echo "ci-rsync:   (no ci/ directory in worktree)" >&2
     git -C "$CI_WORKSPACE/$repo" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    rm -rf "$JOBDIR"
     rm -f "$CI_LOGS/$ID.status"
     exit 1
 fi

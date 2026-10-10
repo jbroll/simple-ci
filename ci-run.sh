@@ -37,7 +37,9 @@ export CI_SELECTOR="$SELECTOR"
 
 log "$REPO @ ${COMMIT:0:8} — ci/$SCRIPT${SUBDIR:+ (in $SUBDIR)}${SELECTOR:+ :$SELECTOR}${TAG:+ #$TAG}${PREBUILT:+ [prebuilt]}"
 
-WORKTREE="${PREBUILT:-$CI_WORKTREES/$REPO-$ID}"
+# The job dir is the worktree's private parent (see ci-rsync.sh).
+JOBDIR="$CI_WORKTREES/$REPO-$ID"
+WORKTREE="${PREBUILT:-$JOBDIR/$REPO}"
 RUNDIR="${WORKTREE}${SUBDIR:+/$SUBDIR}"
 EXIT_CODE=0
 
@@ -87,6 +89,9 @@ on-term() {
     { echo ""; echo "=== killed | $(date -u +%Y-%m-%dT%H:%M:%S) ==="; } >> "$LOGFILE" 2>/dev/null || true
     [[ -n "${WORKTREE:-}" ]] && \
         git -C "$CI_WORKSPACE/$REPO" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    # A prebuilt worktree from before the nested layout has $CI_WORKTREES as
+    # its parent, so remove the parent only when it is this job's own dir.
+    [[ "$(dirname "$WORKTREE")" == "$JOBDIR" ]] && rm -rf "$JOBDIR"
     exec 9>&- 2>/dev/null || true
     rm -f "${LOCKFILE:-}"
     exit 143
@@ -112,6 +117,7 @@ printf '%s' "$$" >&9
 
     if [[ -z "$PREBUILT" ]]; then
         git -C "$CI_WORKSPACE/$REPO" fetch --quiet origin
+        mkdir -p "$JOBDIR"
         git -C "$CI_WORKSPACE/$REPO" worktree add "$WORKTREE" "$COMMIT"
         # Record worktree path so DELETE /job/:id can clean it up via sci clean
         jq -c --arg w "$WORKTREE" '. + {"worktree":$w}' \

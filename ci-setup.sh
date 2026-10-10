@@ -12,22 +12,6 @@ CI_LOGS="${CI_LOGS:-$HOME/ci-logs}"
 mkdir -p "$CI_WORKSPACE" "$CI_WORKTREES" "$CI_LOGS"
 echo "Directories ready."
 
-# Wicketmap declares file: deps on sibling repos.  Each worktree lands in
-# ci-worktrees/<repo>-<id>/ so ../jbr-jazz resolves to ci-worktrees/jbr-jazz.
-# Permanent symlinks here make that work without per-run setup.
-for dep in jbr-jazz nmea-widgets jazz-mock; do
-    target="$CI_WORKTREES/$dep"
-    src="$CI_WORKSPACE/$dep"
-    if [ -L "$target" ]; then
-        echo "symlink exists: $target"
-    elif [ -e "$target" ]; then
-        echo "WARNING: $target exists but is not a symlink — skipping"
-    else
-        ln -s "$src" "$target"
-        echo "created symlink: $target -> $src"
-    fi
-done
-
 cat <<EOF
 
 Next steps on this host:

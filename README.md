@@ -22,6 +22,7 @@ sci push ────rsync──────────────────
                                             ▼
                                        ci-run.sh  (per-job, up to CI_WORKERS)
                                             │ acquires flock, writes PID
+                                            │ ci-deps.sh sync: builds + links CI_DEPS
                                             │ executes ci/<script>
                                             │ writes log + final status
                                             ▼
@@ -61,9 +62,42 @@ Up to `CI_WORKERS` (default 3) `ci-run.sh` processes run concurrently. Each is i
 
 ### Job isolation
 
-Each job runs in a dedicated git worktree under `$CI_WORKTREES/<repo>-<id>/`. The worktree is kept after the job completes so artifacts can be retrieved, and is removed when the job is deleted via `sci clean` (or immediately on kill). The runner executes `ci/<script>` from the repo's worktree — each repo owns its own setup, dependency installation, and test invocation inside that script.
+Each job gets a private job directory, `$CI_WORKTREES/<repo>-<id>/`, holding its git worktree at `$CI_WORKTREES/<repo>-<id>/<repo>/`. The status file's `worktree` field names the inner git worktree. The job directory exists so a `file:../dep` path resolves to a per-job location instead of one every job shares; see [Sibling dependencies](#sibling-dependencies). The worktree is kept after the job completes so artifacts can be retrieved, and is removed with its job directory when the job is deleted via `sci clean` (or immediately on kill). The runner executes `ci/<script>` from the repo's worktree. Each repo owns its own setup, dependency installation, and test invocation inside that script.
 
-Status and log files are kept for `CI_JOB_TTL` (7 days). Worktrees go much sooner: a passing job's at `CI_WORKTREE_TTL`, any other job's at `CI_FAILED_WORKTREE_TTL` (24 hours), since a failed job's traces and screenshots are what you debug. That cleanup walks status files, so a worktree whose status file is already gone would never be reclaimed. `sweep-orphan-worktrees` scans `$CI_WORKTREES` directly for that case. It only removes `<repo>-<16 hex id>` directories older than `CI_FAILED_WORKTREE_TTL` with no status file, leaving symlinks and any other name alone: the same directory holds the dependency symlinks `ci-setup.sh` creates.
+Status and log files are kept for `CI_JOB_TTL` (7 days). Worktrees go much sooner: a passing job's at `CI_WORKTREE_TTL`, any other job's at `CI_FAILED_WORKTREE_TTL` (24 hours), since a failed job's traces and screenshots are what you debug. That cleanup walks status files, so a worktree whose status file is already gone would never be reclaimed. `sweep-orphan-worktrees` scans `$CI_WORKTREES` directly for that case. It only removes `<repo>-<16 hex id>` job directories older than `CI_FAILED_WORKTREE_TTL` with no status file, leaving symlinks and any other name alone. Worktrees from before the nested layout, directly in `$CI_WORKTREES`, are still removed correctly.
+
+### Sibling dependencies
+
+A repo that consumes another repo through `file:../dep` lists it in `CI_DEPS` in its `ci/simple-ci.conf`:
+
+```bash
+CI_DEPS="jbr-jazz nmea-widgets jazz-mock"
+```
+
+Before running `ci/<script>`, `ci-run.sh` calls `ci-deps.sh sync`, which for each dependency:
+
+1. Takes a per-dependency lock (`$CI_DEPS_DIR/<dep>.lock`), fetches the dependency's clone in `$CI_WORKSPACE`, and resolves `origin/HEAD` to a SHA. The fetch and worktree add also hold `$CI_WORKSPACE/<dep>.cilock`, the lock `ci-rsync.sh` uses on the same clone.
+2. Uses `$CI_DEPS_DIR/<dep>-<sha>` if it is complete. Otherwise it removes any partial directory, `git worktree add`s the SHA there, and runs the dependency's own executable `ci/build`. The directory is marked complete (`.ci-complete`) only after the build succeeds, then made read-only.
+3. Symlinks `<jobdir>/<dep>` to the SHA directory and writes `dep:     <dep> <sha>` to the job log, next to the repo's own commit.
+
+Any failure (no clone, fetch, worktree add, missing `ci/build`, build) fails the job with an error naming the dependency and step. There is no fallback to an older SHA. `sync` also refuses a worktree that is not inside a job directory, since linking into the shared `$CI_WORKTREES` would defeat the per-job layout.
+
+The dependency owns its build. For an npm dependency `ci/build` is:
+
+```bash
+#!/bin/sh
+set -e
+[ -d node_modules ] || npm ci
+npm run build
+```
+
+It installs only when sync did not reuse a previous `node_modules`. When the new SHA's `package-lock.json` is byte-identical to the newest complete SHA's, sync hardlinks (`cp -al`) every outermost `node_modules` tree from that SHA into the new one, including the per-package trees npm leaves under workspaces, and the build skips `npm ci`. Most new SHAs then cost the source and the build output, not a full install. Tool caches (`node_modules/.cache`, `.vite`, `.vite-temp`) are not copied, since a write to a hardlinked file would change every SHA sharing it. The new copy's directories are made writable; its files stay shared and read-only.
+
+A complete SHA directory is never modified. Jobs read it without a lock, and a dependency landing mid-job cannot change the tree a running job uses. The read-only mode turns any in-place write into a failure instead of a silent change to another SHA. That includes a consumer's `npm install` writing into a `file:` dependency's tree, which fails the job.
+
+`file:` resolution breaks on a symlink across devices, so `$CI_DEPS_DIR` must be on the same filesystem as `$CI_WORKTREES`. Sync checks the device of both and fails if they differ.
+
+Every sixth maintenance tick (about a minute) the server runs `ci-deps.sh prune`. For each dependency whose lock is free, it keeps the newest complete SHA and every SHA a `$CI_WORKTREES/*/<dep>` symlink points at, and removes the rest, including incomplete directories. Removal makes only directories writable: the files may be hardlinked into a newer SHA, and a chmod on them would make that SHA writable too.
 
 ## CI script convention
 
@@ -88,19 +122,14 @@ npm run test:run
 
 The runner `cd`s to the worktree root (or optional `SUBDIR`) before invoking the script. Script names must match `^[a-zA-Z0-9_-]+$` — no slashes or colons.
 
-For repos with file: dependencies on siblings, or that need environment variables, set those up inside the script:
+For repos that need environment variables, set those up inside the script. Sibling `file:` dependencies come from `CI_DEPS` (see [Sibling dependencies](#sibling-dependencies)) and are already linked at `../<dep>` when the script starts:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKTREE="$(cd "$(dirname "$0")/.." && pwd)"
-
 # Load secrets
 . "$HOME/.config/myrepo/secrets.env"
-
-# Symlink sibling dep if needed
-ln -sfn "$HOME/ci-workspace/some-dep" "$(dirname "$WORKTREE")/some-dep"
 
 npm install
 npm run test:run
@@ -118,8 +147,9 @@ npm run test:run
 | `artifact-path.tcl` | Confines a requested artifact path to the job's own worktree |
 | `ci-run.sh` | Per-job runner spawned by the server; acquires flock, executes `ci/<script>`, writes final status |
 | `ci-rsync.sh` | Rsync server-side wrapper; creates worktree, writes queued status file, prints job ID |
+| `ci-deps.sh` | `sync` builds and links a job's `CI_DEPS` per SHA; `prune` removes unused SHA directories |
 | `sci` | Client CLI: `push`, `wait`, `stat`, `kill`, `clean`, `artifact`, `baseline` subcommands |
-| `ci-setup.sh` | One-time build-host initialisation (directories, symlinks) |
+| `ci-setup.sh` | One-time build-host initialisation (directories) |
 | `wapp/` | Tcl web framework (git submodule → jbroll/wapp) |
 | `simple-ci.conf` | Default configuration template |
 | `ci/smoke` | HTTP API smoke tests; run after deployments |
@@ -137,12 +167,9 @@ git clone git@github.com:jbroll/simple-ci.git ~/src/simple-ci
 # Initialise directories
 ~/src/simple-ci/ci-setup.sh
 
-# Clone repos to test into ci-workspace
+# Clone repos to test into ci-workspace, including any repo another one lists
+# in CI_DEPS. sci builds dependencies per job from their ci/build.
 git clone git@github.com:you/myrepo.git ~/ci-workspace/myrepo
-
-# For repos with file: sibling dependencies, pre-build them. sci does not
-# update them, so pull and rebuild after each dependency lands:
-# cd ~/ci-workspace/some-dep && git pull --ff-only && npm ci && npm run build
 
 # Start the server (see Deployment for persistent runit setup)
 ~/src/simple-ci/ci-server.tcl -server 0.0.0.0:8080
@@ -186,6 +213,8 @@ Configuration is sourced as shell variables in order; first file found wins:
 | `CI_WORKTREE_TTL` | server | Seconds before a *passing* job's worktree is reclaimed (default: 900; 0 keeps it for `CI_JOB_TTL`) |
 | `CI_FAILED_WORKTREE_TTL` | server | Seconds before any other job's worktree, or an orphaned worktree, is reclaimed (default: 86400; 0 keeps it for `CI_JOB_TTL`) |
 | `CI_WORKTREES` | server, `ci-run.sh`, `ci-rsync.sh` | Root for per-job worktrees; must be identical for all three |
+| `CI_DEPS` | `ci-deps.sh` | Space-separated sibling repos to build and link at `../<dep>`; set in the job repo's `ci/simple-ci.conf` |
+| `CI_DEPS_DIR` | `ci-deps.sh` | Root for per-SHA dependency builds; same filesystem as `CI_WORKTREES` (default: `$(dirname $CI_WORKTREES)/ci-deps`) |
 | `CI_JOB_TIMEOUT` | `ci-run.sh` | Max job runtime in seconds (default: 3600) |
 | `CI_FLAKE` | server | Directory holding cross-job state, including the e2e coverage baseline `GET /baseline/:repo` serves (default: `$HOME/ci-flake`) |
 | `CI_HOSTS` | `sci` (all) | Ordered array of hosts to try; first reachable wins (see below) |
@@ -373,7 +402,8 @@ ssh "$CI_HOST" 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
 | Variable | Default | Contents |
 |---|---|---|
 | `CI_WORKSPACE` | `~/ci-workspace/` | Cloned repos used as worktree bases |
-| `CI_WORKTREES` | `~/ci-worktrees/` | Per-job worktrees (deleted on `sci clean` or kill) |
+| `CI_WORKTREES` | `~/ci-worktrees/` | Per-job directories `<repo>-<id>/`, each holding the worktree and dependency links (deleted on `sci clean` or kill) |
+| `CI_DEPS_DIR` | `$(dirname $CI_WORKTREES)/ci-deps/` | Read-only `<dep>-<sha>/` builds and `<dep>.lock` files |
 | `CI_LOGS` | `~/ci-logs/` | `<id>.status`, `<id>.log`, `<id>.lock` per job |
 
 ## Log rotation

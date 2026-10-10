@@ -136,5 +136,5 @@ see its README. Everything on this page applies underneath either way.
 | Push rejected immediately | No `~/ci-workspace/<repo>/.git` on the build host (step 2), or a repo name that does not match the push target. |
 | `CI_HOST must be set in simple-ci.conf` | No config found in any of the four locations. The repo's template is intentionally incomplete. |
 | Job runs but tests an old tree | Reading the `Preparing worktree` sha as the tested revision. It is the base; your working tree is layered on top. |
-| Job passes locally, fails on the host | Environment the script assumes but does not set. Secrets, ports and sibling links belong inside the script or a setup callback it sources. |
+| Job passes locally, fails on the host | Environment the script assumes but does not set. Secrets and ports belong inside the script or a setup callback it sources. Sibling `file:` repos go in `CI_DEPS` in `ci/simple-ci.conf`. |
 | Two jobs collide on a port | Fixed ports in a test config. `CI_SLOT_INDEX` (0..`CI_WORKERS`-1) is exported per job; derive ports from it. |

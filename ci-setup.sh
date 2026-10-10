@@ -23,12 +23,10 @@ Next steps on this host:
      git clone <url> $CI_WORKSPACE/nmea-widgets
      git clone <url> $CI_WORKSPACE/jazz-mock
 
-2. Install and build sibling repos that wicketmap depends on via file: links.
-   These must be pre-built because their package.json exports point to dist/:
-     cd $CI_WORKSPACE/jbr-jazz     && npm install && npm run build
-     cd $CI_WORKSPACE/nmea-widgets && npm install && npm run build
-     cd $CI_WORKSPACE/jazz-mock    && npm install && npm run build
-   Re-run after pulling updates to any of these repos.
+2. Nothing to pre-build. Each job builds the repos its ci/simple-ci.conf
+   lists in CI_DEPS at origin/HEAD, from the dependency's own ci/build,
+   into \$CI_DEPS_DIR (default $(dirname "$CI_WORKTREES")/ci-deps), which
+   must be on the same filesystem as $CI_WORKTREES.
 
 3. Start the HTTP server (it dispatches jobs directly; no separate worker):
      $HOME/src/simple-ci/ci-server.tcl -server 127.0.0.1:8080

@@ -397,6 +397,18 @@ ssh "$CI_HOST" 'git -C ~/src/simple-ci pull && sudo sv restart ci-server'
 
 `HOME` must be set explicitly — runit does not inherit it.
 
+### Scheduled jobs
+
+`ci-server.tcl` sources `$CI_SCHEDULE` (default `~/.config/simple-ci/schedule.tcl`) at startup. It is plain Tcl using the `cron { when } { body }` DSL from `jbr::cron` (`schedule.example.tcl` documents the `when` grammar); the body is normally a call to:
+
+```tcl
+cron {03:00} {
+    schedule-job wicketmap ci/e2e-map nightly-map
+}
+```
+
+`schedule-job <repo> <script> [tag]` queues a job built from the repo's current `origin/HEAD` — no rsync overlay, `ci/<script>` runs against committed main. The optional tag follows the same rules as `sci push --tag` (`^[a-zA-Z0-9._-]{1,64}$`) and works anywhere a job ID does while exactly one live job carries it. A static tag on a recurring schedule goes ambiguous once two runs coexist, so prefer a dated tag for dailies if you resolve jobs by tag.
+
 ## Runtime directories
 
 | Variable | Default | Contents |

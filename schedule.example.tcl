@@ -21,5 +21,5 @@
 # landed code. Runs the full Playwright suite with per-test V8 coverage and
 # writes ~/ci-flake/wicketmap-e2e-impact.json (see ci/e2e-map).
 cron {03:00} {
-    schedule-job wicketmap ci/e2e-map
+    schedule-job wicketmap ci/e2e-map nightly-map
 }

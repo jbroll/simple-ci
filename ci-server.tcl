@@ -748,19 +748,23 @@ proc maintenance {} {
 # An optional config file ($CI_SCHEDULE, default ~/.config/simple-ci/schedule.tcl)
 # is sourced at startup. It is plain Tcl using the `cron { when } { body }` DSL
 # from jbr::cron (package require'd in load-schedule, NOT vendored). The body is
-# arbitrary Tcl, normally `schedule-job <repo> <script>`. jbr::cron self-schedules
+# arbitrary Tcl, normally `schedule-job <repo> <script> [tag]`. jbr::cron self-schedules
 # via the after-event loop, so a missed window (server down) just waits for the
 # next occurrence — no state file. Missing jbr or missing config disables
 # scheduling without affecting the rest of the server.
 #
 # `when` grammar (jbr/cron.tcl): "HH:MM" daily · "Day at HH:MM" weekly ·
 # "every <N><unit> at <M><unit>" interval+offset (units s m h d w t y).
-# Example schedule.tcl:  cron {03:00} { schedule-job wicketmap ci/e2e-map }
+# Example schedule.tcl:  cron {03:00} { schedule-job wicketmap ci/e2e-map nightly-map }
 
 # Queue a CI job from the scheduler: resolve origin/HEAD to a commit and write a
 # queued status file WITHOUT a worktree field, so ci-run.sh fetches origin and
 # `git worktree add`s the commit itself (builds from committed main, no rsync).
-proc schedule-job {repo script} {
+# Optional tag follows the POST /job rules (^[a-zA-Z0-9._-]{1,64}$) and is
+# resolvable via resolve-job-id while unique — a static tag on a recurring
+# schedule goes ambiguous once two runs coexist (status history lives
+# CI_JOB_TTL); prefer a dated tag for dailies.
+proc schedule-job {repo script {tag ""}} {
     global CI_WORKSPACE
     if {![valid-repo $repo]} { puts stderr "schedule-job: unknown repo: $repo"; return }
     set repodir [file join $CI_WORKSPACE $repo]
@@ -775,9 +779,13 @@ proc schedule-job {repo script} {
     if {![regexp {^[a-zA-Z0-9_-]+$} $scriptname]} {
         puts stderr "schedule-job: invalid script: $script"; return
     }
+    if {$tag ne "" && ![regexp {^[a-zA-Z0-9._-]{1,64}$} $tag]} {
+        puts stderr "schedule-job: invalid tag: $tag"; return
+    }
     set id [random-id]
-    set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s","scheduled":true}} \
-                    $id [json-str $repo] [json-str $commit] [json-str $scriptname]]
+    set tag_json [expr {$tag ne "" ? ",\"tag\":\"[json-str $tag]\"" : ""}]
+    set status [format {{"id":"%s","status":"queued","repo":"%s","commit":"%s","script":"%s","scheduled":true%s}} \
+                    $id [json-str $repo] [json-str $commit] [json-str $scriptname] $tag_json]
     atomic-write [status-file $id] $status
     puts stderr "schedule-job: queued $repo/ci/$scriptname @ [string range $commit 0 7] (job $id)"
     kick-dispatch

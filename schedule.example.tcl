@@ -3,7 +3,7 @@
 # Copy to ~/.config/simple-ci/schedule.tcl on the CI host (override path via
 # $CI_SCHEDULE). Sourced by ci-server.tcl at startup. This is plain Tcl using the
 # `cron { when } { body }` DSL; the body is arbitrary Tcl, normally a call to
-#   schedule-job <repo> <script>
+#   schedule-job <repo> <script> [tag]
 # which queues a CI job built from the repo's current origin/HEAD (no rsync) —
 # i.e. ci/<script> run against committed main.
 #
